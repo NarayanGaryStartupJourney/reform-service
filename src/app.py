@@ -143,6 +143,22 @@ async def upload_video(
         
         landmarks_list = process_frames_with_pose(frames)
         
+        # Detect camera angle (for perpendicularity check)
+        from src.exercise_1.calculation.calculation import detect_camera_angle
+        camera_angle_info = detect_camera_angle(landmarks_list)
+        
+        # Reject video if angle is too extreme (>25°)
+        if camera_angle_info.get("should_reject", False):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "camera_angle_too_extreme",
+                    "message": camera_angle_info["message"],
+                    "angle_estimate": camera_angle_info["angle_estimate"],
+                    "recommendation": "Please record again with the person standing perpendicular to the camera for accurate measurements."
+                }
+            )
+        
         # Route to exercise-specific calculation
         calculation_results = route_to_exercise_calculation(exercise, landmarks_list)
         
@@ -171,6 +187,7 @@ async def upload_video(
             "visualization_path": str(output_path),
             "visualization_url": visualization_url,
             "calculation_results": calculation_results,
+            "camera_angle_info": camera_angle_info,
             "validated": True
         }
     except HTTPException:
