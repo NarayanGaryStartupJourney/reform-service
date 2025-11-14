@@ -10,7 +10,7 @@ import os
 import tempfile
 import uuid
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,6 +24,7 @@ from src.shared.pose_estimation.pose_estimation import (
     process_frames_with_pose,
     draw_landmarks_on_frames
 )
+from src.exercise_1.calculation.calculation import calculate_squat_form
 
 app = FastAPI(
     title="Reform Service",
@@ -60,16 +61,43 @@ async def health():
     return {"status": "healthy"}
 
 
-@app.post("/upload-video")
-async def upload_video(video: UploadFile = File(...)):
+def route_to_exercise_calculation(exercise: int, landmarks_list: list) -> dict:
     """
-    Accepts video file upload via FormData
-    Validates file and processes with pose estimation
+    Routes to appropriate exercise calculation module
+    Returns calculation results
+    """
+    if exercise == 1:
+        return calculate_squat_form(landmarks_list)
+    elif exercise == 2:
+        # Placeholder for exercise 2
+        return {"exercise": 2, "message": "Exercise 2 not implemented"}
+    elif exercise == 3:
+        # Placeholder for exercise 3
+        return {"exercise": 3, "message": "Exercise 3 not implemented"}
+    else:
+        raise ValueError(f"Invalid exercise: {exercise}")
+
+
+@app.post("/upload-video")
+async def upload_video(
+    video: UploadFile = File(...),
+    exercise: int = Form(...)
+):
+    """
+    Accepts video file upload via FormData with exercise type
+    Validates file and exercise, processes with pose estimation
     Returns visualization with landmarks
     """
     temp_path = None
     output_path = None
     try:
+        # Validate exercise type
+        if exercise not in [1, 2, 3]:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid exercise type: {exercise}. Must be 1 (Squat), 2 (Bench), or 3 (Deadlift)"
+            )
+        
         # Validate file was provided
         if not video.filename:
             raise HTTPException(status_code=400, detail="No file provided")
@@ -102,7 +130,9 @@ async def upload_video(video: UploadFile = File(...)):
             )
         
         # Log validation success
+        exercise_names = {1: "Squat", 2: "Bench", 3: "Deadlift"}
         print(f"✅ Video received and validated successfully!")
+        print(f"   Exercise: {exercise} ({exercise_names[exercise]})")
         print(f"   Filename: {video.filename}")
         print(f"   Size: {file_size} bytes ({round(file_size / (1024 * 1024), 2)} MB)")
         print(f"   Content Type: {video.content_type}")
@@ -112,6 +142,10 @@ async def upload_video(video: UploadFile = File(...)):
         frames, fps = extract_frames(temp_path)
         
         landmarks_list = process_frames_with_pose(frames)
+        
+        # Route to exercise-specific calculation
+        calculation_results = route_to_exercise_calculation(exercise, landmarks_list)
+        
         landmark_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 29, 30, 31, 32]
         annotated_frames = draw_landmarks_on_frames(frames, landmarks_list, landmark_indices)
         
@@ -123,9 +157,12 @@ async def upload_video(video: UploadFile = File(...)):
         
         visualization_url = f"http://127.0.0.1:8000/outputs/{output_filename}"
         
+        exercise_names = {1: "Squat", 2: "Bench", 3: "Deadlift"}
         return {
             "status": "success",
             "message": "Video processed successfully",
+            "exercise": exercise,
+            "exercise_name": exercise_names[exercise],
             "filename": file_info["filename"],
             "content_type": file_info["content_type"],
             "size": file_size,
@@ -133,6 +170,7 @@ async def upload_video(video: UploadFile = File(...)):
             "frame_count": len(frames),
             "visualization_path": str(output_path),
             "visualization_url": visualization_url,
+            "calculation_results": calculation_results,
             "validated": True
         }
     except HTTPException:
