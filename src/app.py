@@ -6,9 +6,14 @@ FastAPI is the web framework (defines routes, endpoints, middleware)
 Uvicorn is the ASGI server (runs the FastAPI application)
 """
 
+import os
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from src.shared.upload_video.upload_video import accept_video_file
+from src.shared.upload_video.upload_video import (
+    accept_video_file,
+    save_video_temp,
+    extract_frames
+)
 
 app = FastAPI(
     title="Reform Service",
@@ -42,17 +47,27 @@ async def health():
 async def upload_video(video: UploadFile = File(...)):
     """
     Accepts video file upload via FormData
-    Returns confirmation with file metadata
+    Extracts frames and returns frame count
     """
+    temp_path = None
     try:
         file_info = accept_video_file(video)
+        temp_path = save_video_temp(video)
+        frames = extract_frames(temp_path)
+        
         return {
-            "message": "Video file received successfully",
+            "message": "Video processed successfully",
             "filename": file_info["filename"],
-            "content_type": file_info["content_type"]
+            "content_type": file_info["content_type"],
+            "frame_count": len(frames)
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing video: {str(e)}")
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
 
 
 if __name__ == "__main__":
