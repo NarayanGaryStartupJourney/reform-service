@@ -99,15 +99,22 @@ def get_segment_angle(point1, point2) -> float:
         return angle_from_horizontal - 270
 
 
-def calculate_torso_angle_per_frame(landmarks_list: list) -> list:
+def calculate_torso_angle_per_frame(landmarks_list: list, validation_result: dict = None) -> list:
     """Calculates torso angle for each frame."""
     if not landmarks_list:
         return []
     angles = []
-    for landmarks in landmarks_list:
+    per_frame_results = validation_result.get("per_frame_results", []) if validation_result else []
+    required = [11, 12, 23, 24]
+    for i, landmarks in enumerate(landmarks_list):
         if not landmarks:
             angles.append(None)
             continue
+        if per_frame_results and i < len(per_frame_results):
+            frame_valid = per_frame_results[i].get("is_valid", True)
+            if not frame_valid:
+                angles.append(None)
+                continue
         left_angle = get_segment_angle(landmarks.landmark[23], landmarks.landmark[11])
         right_angle = get_segment_angle(landmarks.landmark[24], landmarks.landmark[12])
         if left_angle is not None and right_angle is not None:
@@ -117,15 +124,21 @@ def calculate_torso_angle_per_frame(landmarks_list: list) -> list:
     return angles
 
 
-def calculate_quad_angle_per_frame(landmarks_list: list) -> list:
+def calculate_quad_angle_per_frame(landmarks_list: list, validation_result: dict = None) -> list:
     """Calculates quad angle for each frame."""
     if not landmarks_list:
         return []
     angles = []
-    for landmarks in landmarks_list:
+    per_frame_results = validation_result.get("per_frame_results", []) if validation_result else []
+    for i, landmarks in enumerate(landmarks_list):
         if not landmarks:
             angles.append(None)
             continue
+        if per_frame_results and i < len(per_frame_results):
+            frame_valid = per_frame_results[i].get("is_valid", True)
+            if not frame_valid:
+                angles.append(None)
+                continue
         left_angle = get_segment_angle(landmarks.landmark[23], landmarks.landmark[25])
         right_angle = get_segment_angle(landmarks.landmark[24], landmarks.landmark[26])
         if left_angle is not None and right_angle is not None:
@@ -152,15 +165,21 @@ def get_ankle_segment_angle(point1, point2) -> float:
         return 360 - angle_from_horizontal
 
 
-def calculate_ankle_angle_per_frame(landmarks_list: list) -> list:
+def calculate_ankle_angle_per_frame(landmarks_list: list, validation_result: dict = None) -> list:
     """Calculates ankle angle for each frame from heel-knee segments."""
     if not landmarks_list:
         return []
     angles = []
-    for landmarks in landmarks_list:
+    per_frame_results = validation_result.get("per_frame_results", []) if validation_result else []
+    for i, landmarks in enumerate(landmarks_list):
         if not landmarks:
             angles.append(None)
             continue
+        if per_frame_results and i < len(per_frame_results):
+            frame_valid = per_frame_results[i].get("is_valid", True)
+            if not frame_valid:
+                angles.append(None)
+                continue
         left_angle = get_ankle_segment_angle(landmarks.landmark[29], landmarks.landmark[25])
         right_angle = get_ankle_segment_angle(landmarks.landmark[30], landmarks.landmark[26])
         if left_angle is not None and right_angle is not None:
@@ -170,17 +189,23 @@ def calculate_ankle_angle_per_frame(landmarks_list: list) -> list:
     return angles
 
 
-def calculate_torso_asymmetry_per_frame(landmarks_list: list) -> list:
+def calculate_torso_asymmetry_per_frame(landmarks_list: list, validation_result: dict = None) -> list:
     """Calculates left-right torso asymmetry. Positive = right leaning, negative = left leaning.
     Note: This measures 2D image asymmetry. If person is not perpendicular to camera,
     perspective effects can create apparent asymmetry even with symmetric form."""
     if not landmarks_list:
         return []
     asymmetry = []
-    for landmarks in landmarks_list:
+    per_frame_results = validation_result.get("per_frame_results", []) if validation_result else []
+    for i, landmarks in enumerate(landmarks_list):
         if not landmarks:
             asymmetry.append(None)
             continue
+        if per_frame_results and i < len(per_frame_results):
+            frame_valid = per_frame_results[i].get("is_valid", True)
+            if not frame_valid:
+                asymmetry.append(None)
+                continue
         left_angle = get_segment_angle(landmarks.landmark[23], landmarks.landmark[11])
         right_angle = get_segment_angle(landmarks.landmark[24], landmarks.landmark[12])
         if left_angle is not None and right_angle is not None:
@@ -190,17 +215,23 @@ def calculate_torso_asymmetry_per_frame(landmarks_list: list) -> list:
     return asymmetry
 
 
-def calculate_quad_asymmetry_per_frame(landmarks_list: list) -> list:
+def calculate_quad_asymmetry_per_frame(landmarks_list: list, validation_result: dict = None) -> list:
     """Calculates left-right quad asymmetry. Positive = right forward, negative = left forward.
     Note: This measures 2D image asymmetry. If person is not perpendicular to camera,
     perspective effects can create apparent asymmetry even with symmetric form."""
     if not landmarks_list:
         return []
     asymmetry = []
-    for landmarks in landmarks_list:
+    per_frame_results = validation_result.get("per_frame_results", []) if validation_result else []
+    for i, landmarks in enumerate(landmarks_list):
         if not landmarks:
             asymmetry.append(None)
             continue
+        if per_frame_results and i < len(per_frame_results):
+            frame_valid = per_frame_results[i].get("is_valid", True)
+            if not frame_valid:
+                asymmetry.append(None)
+                continue
         left_angle = get_segment_angle(landmarks.landmark[23], landmarks.landmark[25])
         right_angle = get_segment_angle(landmarks.landmark[24], landmarks.landmark[26])
         if left_angle is not None and right_angle is not None:
@@ -210,17 +241,23 @@ def calculate_quad_asymmetry_per_frame(landmarks_list: list) -> list:
     return asymmetry
 
 
-def calculate_ankle_asymmetry_per_frame(landmarks_list: list) -> list:
+def calculate_ankle_asymmetry_per_frame(landmarks_list: list, validation_result: dict = None) -> list:
     """Calculates left-right ankle asymmetry. Positive = right forward, negative = left forward.
     Note: This measures 2D image asymmetry. If person is not perpendicular to camera,
     perspective effects can create apparent asymmetry even with symmetric form."""
     if not landmarks_list:
         return []
     asymmetry = []
-    for landmarks in landmarks_list:
+    per_frame_results = validation_result.get("per_frame_results", []) if validation_result else []
+    for i, landmarks in enumerate(landmarks_list):
         if not landmarks:
             asymmetry.append(None)
             continue
+        if per_frame_results and i < len(per_frame_results):
+            frame_valid = per_frame_results[i].get("is_valid", True)
+            if not frame_valid:
+                asymmetry.append(None)
+                continue
         left_angle = get_ankle_segment_angle(landmarks.landmark[29], landmarks.landmark[25])
         right_angle = get_ankle_segment_angle(landmarks.landmark[30], landmarks.landmark[26])
         if left_angle is not None and right_angle is not None:
@@ -230,24 +267,16 @@ def calculate_ankle_asymmetry_per_frame(landmarks_list: list) -> list:
     return asymmetry
 
 
-def calculate_squat_form(landmarks_list: list) -> dict:
+def calculate_squat_form(landmarks_list: list, validation_result: dict = None) -> dict:
     """Calculates squat form metrics from pose landmarks. Returns per-frame angles and asymmetry."""
-    torso_angles_per_frame = calculate_torso_angle_per_frame(landmarks_list)
-    quad_angles_per_frame = calculate_quad_angle_per_frame(landmarks_list)
-    ankle_angles_per_frame = calculate_ankle_angle_per_frame(landmarks_list)
-    torso_asymmetry_per_frame = calculate_torso_asymmetry_per_frame(landmarks_list)
-    quad_asymmetry_per_frame = calculate_quad_asymmetry_per_frame(landmarks_list)
-    ankle_asymmetry_per_frame = calculate_ankle_asymmetry_per_frame(landmarks_list)
-    return {
-        "exercise": 1,
-        "angles_per_frame": {
-            "torso_angle": torso_angles_per_frame,
-            "quad_angle": quad_angles_per_frame,
-            "ankle_angle": ankle_angles_per_frame
-        },
-        "asymmetry_per_frame": {
-            "torso_asymmetry": torso_asymmetry_per_frame,
-            "quad_asymmetry": quad_asymmetry_per_frame,
-            "ankle_asymmetry": ankle_asymmetry_per_frame
-        }
+    angles = {
+        "torso_angle": calculate_torso_angle_per_frame(landmarks_list, validation_result),
+        "quad_angle": calculate_quad_angle_per_frame(landmarks_list, validation_result),
+        "ankle_angle": calculate_ankle_angle_per_frame(landmarks_list, validation_result)
     }
+    asymmetry = {
+        "torso_asymmetry": calculate_torso_asymmetry_per_frame(landmarks_list, validation_result),
+        "quad_asymmetry": calculate_quad_asymmetry_per_frame(landmarks_list, validation_result),
+        "ankle_asymmetry": calculate_ankle_asymmetry_per_frame(landmarks_list, validation_result)
+    }
+    return {"exercise": 1, "angles_per_frame": angles, "asymmetry_per_frame": asymmetry}

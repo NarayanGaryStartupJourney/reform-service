@@ -4,10 +4,13 @@ import os
 import tempfile
 import uuid
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from collections import deque
+import time
+from threading import Lock
 from src.shared.upload_video.upload_video import (
     accept_video_file,
     save_video_temp,
@@ -19,6 +22,11 @@ from src.shared.pose_estimation.pose_estimation import (
     draw_landmarks_on_frames
 )
 from src.exercise_1.calculation.calculation import calculate_squat_form
+
+RATE_LIMIT_WINDOW_SECONDS = 60
+RATE_LIMIT_MAX_REQUESTS = 5
+_upload_rate_limit_store = {}
+_upload_rate_limit_lock = Lock()
 
 app = FastAPI(
     title="Reform Service",
@@ -48,10 +56,10 @@ async def health():
     return {"status": "healthy"}
 
 
-def route_to_exercise_calculation(exercise: int, landmarks_list: list) -> dict:
+def route_to_exercise_calculation(exercise: int, landmarks_list: list, validation_result: dict = None) -> dict:
     """Routes to appropriate exercise calculation module."""
     if exercise == 1:
-        return calculate_squat_form(landmarks_list)
+        return calculate_squat_form(landmarks_list, validation_result)
     elif exercise == 2:
         return {"exercise": 2, "message": "Exercise 2 not implemented"}
     elif exercise == 3:
@@ -69,21 +77,25 @@ def _validate_exercise(exercise: int) -> None:
         )
 
 
-async def _validate_file(video: UploadFile) -> tuple:
+async def _validate_file(video: UploadFile, file_size: int = None) -> tuple:
     """Validates video file and returns file info and size."""
     if not video.filename:
         raise HTTPException(status_code=400, detail="No file provided")
     file_info = accept_video_file(video)
-    contents = await video.read()
-    file_size = len(contents)
-    await video.seek(0)
+    
+    if file_size is None:
+        raise ValueError("File size must be provided")
+    
     if file_size == 0:
         raise HTTPException(status_code=400, detail="Empty file received")
+    
     MAX_FILE_SIZE = 500 * 1024 * 1024
     if file_size > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail=f"File too large: {file_size} bytes. Maximum: {MAX_FILE_SIZE} bytes")
-    if len(contents) < 100:
+    
+    if file_size < 100:
         raise HTTPException(status_code=400, detail="File appears to be too small to be a valid video")
+    
     return file_info, file_size
 
 
@@ -104,74 +116,278 @@ def _check_camera_angle(landmarks_list: list) -> dict:
     return camera_angle_info
 
 
-def _analyze_exercise_form(exercise: int, calculation_results: dict, fps: float) -> tuple:
+def _extract_active_angles(angles: list, squat_phases: dict) -> list:
+    """Extracts angles only from active squat phases."""
+    if not squat_phases.get("reps"):
+        return angles
+    active_angles = []
+    for rep in squat_phases["reps"]:
+        active_angles.extend([angles[i] if i < len(angles) else None
+                             for i in range(rep["start_frame"], rep["end_frame"] + 1)])
+    return active_angles
+
+
+def _perform_angle_analyses(calculation_results: dict, quad_angles: list, ankle_angles: list,
+                           squat_phases: dict, torso_asymmetry: list, quad_asymmetry: list,
+                           ankle_asymmetry: list, fps: float, camera_angle_info: dict = None,
+                           landmarks_list: list = None, validation_result: dict = None) -> dict:
+    """Performs all angle analyses and returns form_analysis dict."""
+    from src.exercise_1.llm_form_analysis.llm_form_analysis import (
+        analyze_torso_angle, analyze_quad_angle, analyze_ankle_angle, analyze_asymmetry,
+        analyze_rep_consistency, analyze_glute_dominance, analyze_knee_valgus, _is_front_view
+    )
+    quad_angles_raw = calculation_results["angles_per_frame"].get("quad_angle", [])
+    torso_angles_raw = calculation_results["angles_per_frame"].get("torso_angle", [])
+    torso_analysis = analyze_torso_angle(torso_angles_raw, quad_angles_raw, validation_result)
+    quad_analysis = analyze_quad_angle(quad_angles)
+    ankle_analysis = analyze_ankle_angle(ankle_angles)
+    torso_asymmetry_analysis = analyze_asymmetry(torso_asymmetry, "torso")
+    quad_asymmetry_analysis = analyze_asymmetry(quad_asymmetry, "quad")
+    ankle_asymmetry_analysis = analyze_asymmetry(ankle_asymmetry, "ankle")
+    asymmetry_data = calculation_results.get("asymmetry_per_frame", {})
+    rep_consistency = analyze_rep_consistency(
+        calculation_results["angles_per_frame"], asymmetry_data, squat_phases.get("reps", [])
+    ) if squat_phases and squat_phases.get("reps") else None
+    glute_dominance = analyze_glute_dominance(
+        quad_angles_raw, torso_angles_raw, squat_phases.get("reps", []), fps
+    ) if squat_phases and squat_phases.get("reps") else None
+    knee_valgus = None
+    if _is_front_view(camera_angle_info) and landmarks_list and squat_phases and squat_phases.get("reps"):
+        knee_valgus = analyze_knee_valgus(landmarks_list, squat_phases.get("reps", []))
+    result = {
+        "torso_angle": torso_analysis, "quad_angle": quad_analysis, "ankle_angle": ankle_analysis,
+        "torso_asymmetry": torso_asymmetry_analysis, "quad_asymmetry": quad_asymmetry_analysis,
+        "ankle_asymmetry": ankle_asymmetry_analysis
+    }
+    if rep_consistency:
+        result["rep_consistency"] = rep_consistency
+    if glute_dominance and glute_dominance.get("status") != "error":
+        result["glute_dominance"] = glute_dominance
+    if knee_valgus and knee_valgus.get("status") != "error":
+        result["knee_valgus"] = knee_valgus
+    from src.exercise_1.llm_form_analysis.llm_form_analysis import calculate_final_score
+    result["final_score"] = calculate_final_score(result)
+    return result
+
+
+def _extract_all_active_data(calculation_results: dict, squat_phases: dict) -> tuple:
+    """Extracts all active angles and asymmetry data from squat phases."""
+    quad_angles_raw = calculation_results["angles_per_frame"].get("quad_angle", [])
+    quad_angles = _extract_active_angles(quad_angles_raw, squat_phases)
+    ankle_angles = _extract_active_angles(
+        calculation_results["angles_per_frame"].get("ankle_angle", []), squat_phases
+    )
+    asymmetry_data = calculation_results.get("asymmetry_per_frame", {})
+    torso_asymmetry = _extract_active_angles(asymmetry_data.get("torso_asymmetry", []), squat_phases)
+    quad_asymmetry = _extract_active_angles(asymmetry_data.get("quad_asymmetry", []), squat_phases)
+    ankle_asymmetry = _extract_active_angles(asymmetry_data.get("ankle_asymmetry", []), squat_phases)
+    return quad_angles, ankle_angles, torso_asymmetry, quad_asymmetry, ankle_asymmetry
+
+
+def _analyze_exercise_form(exercise: int, calculation_results: dict, fps: float,
+                          camera_angle_info: dict = None, landmarks_list: list = None, validation_result: dict = None) -> tuple:
     """Analyzes exercise form and returns form_analysis and squat_phases."""
     form_analysis = None
     squat_phases = None
     if exercise == 1 and calculation_results.get("angles_per_frame"):
-        from src.exercise_1.llm_form_analysis.llm_form_analysis import analyze_torso_angle, detect_squat_phases
-        squat_phases = detect_squat_phases(calculation_results["angles_per_frame"].get("quad_angle", []), fps)
-        torso_analysis = analyze_torso_angle(
-            calculation_results["angles_per_frame"]["torso_angle"],
-            calculation_results["angles_per_frame"].get("quad_angle")
+        from src.exercise_1.llm_form_analysis.llm_form_analysis import detect_squat_phases
+        quad_angles_raw = calculation_results["angles_per_frame"].get("quad_angle", [])
+        squat_phases = detect_squat_phases(quad_angles_raw, fps)
+        quad_angles, ankle_angles, torso_asymmetry, quad_asymmetry, ankle_asymmetry = _extract_all_active_data(
+            calculation_results, squat_phases
         )
-        form_analysis = {"torso_angle": torso_analysis}
+        form_analysis = _perform_angle_analyses(
+            calculation_results, quad_angles, ankle_angles, squat_phases,
+            torso_asymmetry, quad_asymmetry, ankle_asymmetry, fps, camera_angle_info, landmarks_list, validation_result
+        )
     return form_analysis, squat_phases
 
 
-def _process_video_analysis(video: UploadFile, exercise: int, frames: list, fps: float, landmarks_list: list) -> tuple:
+def _process_video_analysis(video: UploadFile, exercise: int, frames: list, fps: float, landmarks_list: list, validation_result: dict = None) -> tuple:
     """Processes video analysis and returns results."""
     camera_angle_info = _check_camera_angle(landmarks_list)
-    calculation_results = route_to_exercise_calculation(exercise, landmarks_list)
-    form_analysis, squat_phases = _analyze_exercise_form(exercise, calculation_results, fps)
+    calculation_results = route_to_exercise_calculation(exercise, landmarks_list, validation_result)
+    form_analysis, squat_phases = _analyze_exercise_form(
+        exercise, calculation_results, fps, camera_angle_info, landmarks_list, validation_result
+    )
     return calculation_results, camera_angle_info, form_analysis, squat_phases
 
 
+def _build_response(exercise: int, file_info: dict, file_size: int, frames: list, output_path: Path,
+                   output_filename: str, calculation_results: dict, camera_angle_info: dict,
+                   form_analysis: dict, squat_phases: dict) -> dict:
+    """Builds the response dictionary."""
+    exercise_names = {1: "Squat", 2: "Bench", 3: "Deadlift"}
+    return {
+        "status": "success", "message": "Video processed successfully", "exercise": exercise,
+        "exercise_name": exercise_names[exercise], "filename": file_info["filename"],
+        "content_type": file_info["content_type"], "size": file_size,
+        "size_mb": round(file_size / (1024 * 1024), 2), "frame_count": len(frames),
+        "visualization_path": str(output_path), "visualization_url": f"http://127.0.0.1:8000/outputs/{output_filename}",
+        "calculation_results": calculation_results, "camera_angle_info": camera_angle_info,
+        "form_analysis": form_analysis, "squat_phases": squat_phases, "validated": True
+    }
+
+
+def _create_visualization(frames: list, landmarks_list: list, fps: float) -> str:
+    """Creates visualization video and returns output path."""
+    landmark_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 29, 30, 31, 32]
+    annotated_frames = draw_landmarks_on_frames(frames, landmarks_list, landmark_indices)
+    video_id = str(uuid.uuid4())
+    output_filename = f"{video_id}.mp4"
+    output_path = OUTPUTS_DIR / output_filename
+    save_frames_as_video(annotated_frames, str(output_path), fps)
+    return str(output_path), output_filename
+
+
+def _handle_upload_errors(e: Exception):
+    """Handles upload errors and raises appropriate HTTPException."""
+    if isinstance(e, HTTPException):
+        raise e
+    elif isinstance(e, ValueError):
+        raise HTTPException(status_code=400, detail=str(e))
+    else:
+        print(f"❌ Error processing video: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing video: {str(e)}")
+
+
+def _get_client_ip(request: Request) -> str:
+    """Extracts client IP address, considering common proxy headers."""
+    x_forwarded_for = request.headers.get("X-Forwarded-For")
+    if x_forwarded_for:
+        # Use first IP in list
+        return x_forwarded_for.split(",")[0].strip()
+    client = request.client
+    if client and client.host:
+        return client.host
+    return "unknown"
+
+
+def _check_rate_limit(client_ip: str) -> None:
+    """Enforces simple IP-based rate limiting for uploads."""
+    now = time.time()
+    with _upload_rate_limit_lock:
+        request_times = _upload_rate_limit_store.setdefault(client_ip, deque())
+        # Remove timestamps outside the window
+        while request_times and request_times[0] <= now - RATE_LIMIT_WINDOW_SECONDS:
+            request_times.popleft()
+        if not request_times:
+            _upload_rate_limit_store.pop(client_ip, None)
+            request_times = _upload_rate_limit_store.setdefault(client_ip, deque())
+        if len(request_times) >= RATE_LIMIT_MAX_REQUESTS:
+            retry_after = int(request_times[0] + RATE_LIMIT_WINDOW_SECONDS - now) + 1
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "rate_limit_exceeded",
+                    "message": f"Too many uploads from this IP. Limit: {RATE_LIMIT_MAX_REQUESTS} per {RATE_LIMIT_WINDOW_SECONDS}s.",
+                    "retry_after_seconds": max(retry_after, 1)
+                }
+            )
+        request_times.append(now)
+        # Prevent unbounded growth
+        if not request_times:
+            del _upload_rate_limit_store[client_ip]
+
+
 @app.post("/upload-video")
-async def upload_video(video: UploadFile = File(...), exercise: int = Form(...)):
+async def upload_video(
+    request: Request,
+    video: UploadFile = File(...),
+    exercise: int = Form(...)
+):
     """Accepts video file upload and processes with pose estimation."""
     temp_path = None
     try:
+        client_ip = _get_client_ip(request)
+        _check_rate_limit(client_ip)
         _validate_exercise(exercise)
-        file_info, file_size = await _validate_file(video)
-        temp_path = save_video_temp(video)
-        frames, fps = extract_frames(temp_path)
-        landmarks_list = process_frames_with_pose(frames)
-        calculation_results, camera_angle_info, form_analysis, squat_phases = _process_video_analysis(
-            video, exercise, frames, fps, landmarks_list
+        temp_path = await save_video_temp(video)
+        file_size = os.path.getsize(temp_path)
+        file_info, _ = await _validate_file(video, file_size)
+        from src.shared.upload_video.video_validation import validate_file_headers, validate_video_format
+        header_validation = validate_file_headers(temp_path)
+        if not header_validation.get("is_valid", False):
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise HTTPException(status_code=400, detail={
+                "error": "invalid_file_headers",
+                "message": header_validation.get("errors", ["Invalid file headers"])[0],
+                "detected_format": header_validation.get("detected_format", None),
+                "recommendation": header_validation.get("recommendation", "Please upload a valid video file")
+            })
+        from src.shared.upload_video.video_validation import validate_file_content
+        content_validation = validate_file_content(temp_path)
+        if not content_validation.get("is_valid", False):
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise HTTPException(status_code=400, detail={
+                "error": "invalid_file_content",
+                "message": content_validation.get("errors", ["File content validation failed"])[0],
+                "warnings": content_validation.get("warnings", []),
+                "fps": content_validation.get("fps", 0),
+                "frame_count": content_validation.get("frame_count", 0),
+                "recommendation": content_validation.get("recommendation", "Please upload a valid video file")
+            })
+        format_validation = validate_video_format(temp_path)
+        if not format_validation.get("is_valid", False):
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise HTTPException(status_code=400, detail={
+                "error": "video_format_unsupported",
+                "message": format_validation.get("errors", ["Video format not supported"])[0],
+                "codec": format_validation.get("codec", "unknown"),
+                "recommendation": format_validation.get("recommendation", "Please convert to MP4 (H.264) format")
+            })
+        frames, fps, frame_validation, fps_validation = extract_frames(temp_path, validate=True)
+        if frame_validation and not frame_validation.get("is_valid", True):
+            raise HTTPException(status_code=400, detail={
+                "error": "frame_extraction_failed",
+                "message": frame_validation.get("errors", ["Frame extraction failed"])[0],
+                "frame_count": frame_validation.get("frame_count", 0),
+                "valid_frame_count": frame_validation.get("valid_frame_count", 0),
+                "recommendation": frame_validation.get("recommendation", "Please try re-exporting the video")
+            })
+        if fps_validation and not fps_validation.get("is_valid", True):
+            raise HTTPException(status_code=400, detail={
+                "error": "fps_validation_failed",
+                "message": fps_validation.get("errors", ["FPS validation failed"])[0],
+                "fps": fps_validation.get("fps", 0),
+                "warnings": fps_validation.get("warnings", []),
+                "recommendation": fps_validation.get("recommendation", "Please use a video with valid FPS metadata")
+            })
+        from src.shared.upload_video.video_validation import validate_video_duration
+        frame_count = len(frames) if frames else 0
+        duration_validation = validate_video_duration(frame_count, fps, max_duration_seconds=120.0)
+        if not duration_validation.get("is_valid", True):
+            raise HTTPException(status_code=400, detail={
+                "error": "video_duration_exceeded",
+                "message": duration_validation.get("errors", ["Video duration validation failed"])[0],
+                "duration_seconds": duration_validation.get("duration_seconds", 0),
+                "frame_count": duration_validation.get("frame_count", 0),
+                "fps": duration_validation.get("fps", 0),
+                "recommendation": duration_validation.get("recommendation", "Please select a video shorter than 120 seconds")
+            })
+        required_landmarks = None
+        if exercise == 1:
+            from src.exercise_1.calculation.landmark_validation import get_squat_required_landmarks
+            required_landmarks = get_squat_required_landmarks()
+        landmarks_list, validation_result = process_frames_with_pose(frames, validate=True, required_landmarks=required_landmarks)
+        if validation_result and not validation_result.get("overall_valid", True):
+            raise HTTPException(status_code=400, detail={
+                "error": "insufficient_pose_detection",
+                "message": validation_result.get("errors", ["Insufficient pose detection"])[0],
+                "valid_frame_percentage": validation_result.get("valid_frame_percentage", 0.0),
+                "recommendation": validation_result.get("recommendation", "Ensure person is fully visible")
+            })
+        calc_results, cam_info, form_analysis, squat_phases = _process_video_analysis(
+            video, exercise, frames, fps, landmarks_list, validation_result
         )
-        landmark_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 29, 30, 31, 32]
-        annotated_frames = draw_landmarks_on_frames(frames, landmarks_list, landmark_indices)
-        video_id = str(uuid.uuid4())
-        output_filename = f"{video_id}.mp4"
-        output_path = OUTPUTS_DIR / output_filename
-        save_frames_as_video(annotated_frames, str(output_path), fps)
-        exercise_names = {1: "Squat", 2: "Bench", 3: "Deadlift"}
-        return {
-            "status": "success",
-            "message": "Video processed successfully",
-            "exercise": exercise,
-            "exercise_name": exercise_names[exercise],
-            "filename": file_info["filename"],
-            "content_type": file_info["content_type"],
-            "size": file_size,
-            "size_mb": round(file_size / (1024 * 1024), 2),
-            "frame_count": len(frames),
-            "visualization_path": str(output_path),
-            "visualization_url": f"http://127.0.0.1:8000/outputs/{output_filename}",
-            "calculation_results": calculation_results,
-            "camera_angle_info": camera_angle_info,
-            "form_analysis": form_analysis,
-            "squat_phases": squat_phases,
-            "validated": True
-        }
-    except HTTPException:
-        raise
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        output_path, output_filename = _create_visualization(frames, landmarks_list, fps)
+        return _build_response(exercise, file_info, file_size, frames, Path(output_path),
+                              output_filename, calc_results, cam_info, form_analysis, squat_phases)
     except Exception as e:
-        print(f"❌ Error processing video: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error processing video: {str(e)}")
+        _handle_upload_errors(e)
     finally:
         if temp_path and os.path.exists(temp_path):
             os.unlink(temp_path)
