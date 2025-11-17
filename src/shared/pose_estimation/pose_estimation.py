@@ -7,10 +7,10 @@ import mediapipe as mp
 import cv2
 
 
-def process_frames_with_pose(frames: list) -> list:
+def process_frames_with_pose(frames: list, validate: bool = False, required_landmarks: list = None) -> tuple:
     """
-    Processes frames with MediaPipe Pose to extract keypoints
-    Returns list of pose landmarks for each frame
+    Processes frames with MediaPipe Pose to extract keypoints.
+    Returns landmarks list and optionally validation result.
     """
     mp_pose = mp.solutions.pose
     pose = mp_pose.Pose()
@@ -22,7 +22,11 @@ def process_frames_with_pose(frames: list) -> list:
         results.append(result.pose_landmarks)
     
     pose.close()
-    return results
+    if validate:
+        from src.shared.pose_estimation.landmark_validation import validate_landmarks_batch
+        validation_result = validate_landmarks_batch(results, required_landmarks)
+        return results, validation_result
+    return results, None
 
 
 def draw_landmarks_on_frames(frames: list, landmarks_list: list, 

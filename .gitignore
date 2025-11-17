@@ -33,6 +33,7 @@ htmlcov/
 
 # Logs
 *.log
+WORK_LOG.md
 
 # Outputs
 outputs/
