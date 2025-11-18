@@ -5,8 +5,7 @@ import tempfile
 import uuid
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from collections import deque
 import time
@@ -30,7 +29,6 @@ app = FastAPI(
 
 OUTPUTS_DIR = Path("outputs")
 OUTPUTS_DIR.mkdir(exist_ok=True)
-app.mount("/outputs", StaticFiles(directory=str(OUTPUTS_DIR)), name="outputs")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -53,6 +51,35 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
+
+
+@app.get("/robots.txt")
+async def robots_txt():
+    """Returns robots.txt to disallow crawlers from accessing output and tmp directories."""
+    return Response(
+        content="User-agent: *\nDisallow: /outputs/\nDisallow: /tmp/\nDisallow: /temp/\n",
+        media_type="text/plain"
+    )
+
+
+@app.get("/outputs/{filename}")
+async def get_output_file(filename: str):
+    """Serves output video files only if they exist and are valid. Prevents directory listing."""
+    if not filename or ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=403, detail={"error": "forbidden", "message": "Invalid filename"})
+    
+    file_path = OUTPUTS_DIR / filename
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail={"error": "not_found", "message": "File not found"})
+    
+    if not file_path.suffix.lower() in ['.mp4', '.avi', '.mov']:
+        raise HTTPException(status_code=403, detail={"error": "forbidden", "message": "Invalid file type"})
+    
+    return FileResponse(
+        path=str(file_path),
+        media_type="video/mp4",
+        filename=filename
+    )
 
 
 def get_required_landmarks(exercise: int) -> list:
@@ -352,6 +379,22 @@ def create_visualization_streaming(video_path: str, landmarks_list: list, fps: f
     return actual_output_path, output_filename
 
 
+def _cleanup_old_outputs(outputs_dir: Path) -> None:
+    """Cleans up old output video files when a new upload is processed."""
+    try:
+        if not outputs_dir.exists():
+            return
+        
+        for file_path in outputs_dir.iterdir():
+            if file_path.is_file() and file_path.suffix in ['.mp4', '.avi', '.mov']:
+                try:
+                    file_path.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 def _handle_upload_errors(e: Exception):
     """Handles upload errors and raises appropriate HTTPException."""
     if isinstance(e, HTTPException):
@@ -359,8 +402,10 @@ def _handle_upload_errors(e: Exception):
     elif isinstance(e, ValueError):
         raise HTTPException(status_code=400, detail=str(e))
     else:
-        print(f"❌ Error processing video: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error processing video: {str(e)}")
+        raise HTTPException(status_code=500, detail={
+            "error": "internal_server_error",
+            "message": "An unexpected error occurred while processing your video"
+        })
 
 
 def _get_client_ip(request: Request) -> str:
@@ -568,6 +613,8 @@ async def upload_video(
         calc_results, cam_info, form_analysis, squat_phases = _process_video_analysis(
             video, exercise, None, fps, landmarks_list, validation_result
         )
+        
+        _cleanup_old_outputs(OUTPUTS_DIR)
         
         output_path, output_filename = create_visualization_streaming(
             temp_path, landmarks_list, fps, calc_results, form_analysis,
