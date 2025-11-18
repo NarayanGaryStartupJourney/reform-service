@@ -310,17 +310,27 @@ def create_visualization_streaming(video_path: str, landmarks_list: list, output
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
-    # Create video writer
-    fourcc = cv2.VideoWriter_fourcc(*'avc1')
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    # Create video writer - try multiple codecs (headless OpenCV may not have all codecs)
+    # Try codecs in order of preference
+    codecs_to_try = [
+        ('mp4v', cv2.VideoWriter_fourcc(*'mp4v')),  # MPEG-4 Part 2 (most compatible)
+        ('XVID', cv2.VideoWriter_fourcc(*'XVID')),  # Xvid codec
+        ('MJPG', cv2.VideoWriter_fourcc(*'MJPG')),  # Motion JPEG
+    ]
     
-    if not out.isOpened():
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = None
+    used_codec = None
+    for codec_name, fourcc in codecs_to_try:
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        if out.isOpened():
+            used_codec = codec_name
+            break
+        out.release()
+        out = None
     
-    if not out.isOpened():
+    if not out or not out.isOpened():
         cap.release()
-        raise ValueError(f"Could not create output video file: {output_path}")
+        raise ValueError(f"Could not create output video file: {output_path}. Tried codecs: {[c[0] for c in codecs_to_try]}")
     
     frame_index = 0
     landmark_index = 0
