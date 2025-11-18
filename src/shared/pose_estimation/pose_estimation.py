@@ -40,20 +40,17 @@ def process_video_streaming_pose(video_path: str, validate: bool = False, requir
             if not ret:
                 break
             
-            # Only process every Nth frame if downsampling
             if frame_index % frame_skip == 0:
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 result = pose.process(rgb_frame)
                 results.append(result.pose_landmarks)
                 processed_count += 1
-                # Frame is automatically discarded after processing
             
             frame_index += 1
     finally:
         cap.release()
         pose.close()
     
-    # Adjust FPS if frames were downsampled
     if frame_skip > 1:
         fps = fps / frame_skip
     
@@ -63,36 +60,6 @@ def process_video_streaming_pose(video_path: str, validate: bool = False, requir
         return results, fps, processed_count, validation_result
     
     return results, fps, processed_count, None
-
-
-def process_frames_with_pose(frames: list, validate: bool = False, required_landmarks: list = None) -> tuple:
-    """
-    Processes frames with MediaPipe Pose to extract keypoints.
-    Uses batch processing to reduce memory usage.
-    Returns landmarks list and optionally validation result.
-    """
-    mp_pose = mp.solutions.pose
-    pose = mp_pose.Pose()
-    results = []
-    
-    # Process in batches to reduce memory pressure
-    # Process 50 frames at a time, then release memory
-    BATCH_SIZE = 50
-    for i in range(0, len(frames), BATCH_SIZE):
-        batch = frames[i:i + BATCH_SIZE]
-        for frame in batch:
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            result = pose.process(rgb_frame)
-            results.append(result.pose_landmarks)
-        # Explicitly delete batch to free memory
-        del batch
-    
-    pose.close()
-    if validate:
-        from src.shared.pose_estimation.landmark_validation import validate_landmarks_batch
-        validation_result = validate_landmarks_batch(results, required_landmarks)
-        return results, validation_result
-    return results, None
 
 
 def _get_segment_angle(point1, point2) -> float:
@@ -287,12 +254,13 @@ def create_visualization_streaming(video_path: str, landmarks_list: list, output
                                    fps: float = 30.0, frame_skip: int = 1) -> str:
     """
     Streaming version: Reads frames from video, draws landmarks, writes directly to output video.
+    Uses imageio-ffmpeg to create browser-compatible H.264 MP4 files.
     Never keeps all frames in memory - processes one frame at a time.
     
     Args:
         video_path: Path to input video file
         landmarks_list: List of MediaPipe pose landmarks (must match processed frames)
-        output_path: Path to output video file
+        output_path: Path to output video file (should be .mp4)
         landmark_indices: List of landmark indices to draw
         per_frame_status: Optional dict mapping frame index to status dict
         fps: Frames per second for output video
@@ -301,45 +269,38 @@ def create_visualization_streaming(video_path: str, landmarks_list: list, output
     Returns:
         Path to output video file
     """
+    import imageio
+    import os
+    
+    # Ensure output path is .mp4 for browser compatibility
+    if not output_path.endswith('.mp4'):
+        base_path = os.path.splitext(output_path)[0]
+        output_path = f"{base_path}.mp4"
+    
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError(f"Could not open video file: {video_path}")
     
     # Get video properties
-    input_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
-    # Create video writer - try multiple codecs (headless OpenCV may not have all codecs)
-    # Try codecs in order of preference
-    # Note: Use .avi extension for better compatibility with some codecs
-    import os
-    base_path = os.path.splitext(output_path)[0]
-    temp_output_path = f"{base_path}.avi"  # Use .avi for better codec support
-    
-    codecs_to_try = [
-        ('mp4v', cv2.VideoWriter_fourcc(*'mp4v')),  # MPEG-4 Part 2 (most compatible)
-        ('XVID', cv2.VideoWriter_fourcc(*'XVID')),  # Xvid codec
-        ('MJPG', cv2.VideoWriter_fourcc(*'MJPG')),  # Motion JPEG
-    ]
-    
-    out = None
-    used_codec = None
-    for codec_name, fourcc in codecs_to_try:
-        out = cv2.VideoWriter(temp_output_path, fourcc, fps, (width, height))
-        if out.isOpened():
-            used_codec = codec_name
-            break
-        if out:
-            out.release()
-        out = None
-    
-    if not out or not out.isOpened():
+    # Create video writer using imageio-ffmpeg (H.264 codec, browser-compatible)
+    try:
+        writer = imageio.get_writer(
+            output_path,
+            fps=fps,
+            codec='libx264',  # H.264 codec for browser compatibility
+            quality=8,  # Good quality (0-10 scale, 8 is high quality)
+            pixelformat='yuv420p'  # Ensures browser compatibility
+        )
+    except Exception as e:
         cap.release()
-        raise ValueError(f"Could not create output video file: {temp_output_path}. Tried codecs: {[c[0] for c in codecs_to_try]}")
+        raise ValueError(f"Could not create video writer: {str(e)}")
     
     frame_index = 0
     landmark_index = 0
+    frames_written = 0
     
     try:
         while True:
@@ -347,7 +308,6 @@ def create_visualization_streaming(video_path: str, landmarks_list: list, output
             if not ret:
                 break
             
-            # Only process frames that match the downsampled landmarks
             if frame_index % frame_skip == 0:
                 if landmark_index >= len(landmarks_list):
                     break
@@ -370,78 +330,38 @@ def create_visualization_streaming(video_path: str, landmarks_list: list, output
                             x, y = int(lm.x * w), int(lm.y * h)
                             cv2.circle(annotated, (x, y), 5, colors.get(idx, (0, 255, 0)), -1)
                 
-                # Write frame directly to output video (don't keep in memory)
-                out.write(annotated)
+                rgb_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+                
+                try:
+                    writer.append_data(rgb_frame)
+                    frames_written += 1
+                except Exception as e:
+                    import warnings
+                    warnings.warn(f"Failed to write frame {landmark_index} to video: {str(e)}")
+                
                 landmark_index += 1
             
             frame_index += 1
     finally:
         cap.release()
-        if out:
-            out.release()
+        writer.close()
     
-    # Verify video file was created and has content
-    if not os.path.exists(temp_output_path):
-        raise ValueError(f"Output video file was not created: {temp_output_path}")
+    if not os.path.exists(output_path):
+        raise ValueError(f"Output video file was not created: {output_path}")
     
-    file_size = os.path.getsize(temp_output_path)
+    file_size = os.path.getsize(output_path)
     if file_size == 0:
-        raise ValueError(f"Output video file is empty: {temp_output_path}")
+        raise ValueError(f"Output video file is empty: {output_path} (wrote {frames_written} frames)")
     
-    # Verify video can be opened (basic validation)
-    test_cap = cv2.VideoCapture(temp_output_path)
+    test_cap = cv2.VideoCapture(output_path)
     if not test_cap.isOpened():
-        raise ValueError(f"Output video file cannot be opened: {temp_output_path}")
+        raise ValueError(f"Output video file cannot be opened: {output_path}")
+    
+    ret, test_frame = test_cap.read()
     test_cap.release()
+    if not ret or test_frame is None:
+        raise ValueError(f"Output video file appears corrupted: {output_path} (cannot read frames)")
     
-    # If original path was .mp4, rename .avi to .mp4 (browsers can play .avi too, but .mp4 is preferred)
-    if output_path.endswith('.mp4') and temp_output_path != output_path:
-        # Try to rename, but if it fails, return the .avi file
-        try:
-            if os.path.exists(output_path):
-                os.remove(output_path)
-            os.rename(temp_output_path, output_path)
-            return output_path
-        except Exception:
-            # If rename fails, return the .avi file (browsers can still play it)
-            return temp_output_path
-    
-    return temp_output_path
+    return output_path
 
 
-def draw_landmarks_on_frames(frames: list, landmarks_list: list, 
-                             landmark_indices: list, per_frame_status: dict = None, fps: float = 30.0) -> list:
-    """
-    Draws specified landmarks on frames with optional color coding based on per-frame status.
-    Also draws torso and quad segments for biomechanical visualization.
-    
-    Args:
-        frames: List of video frames
-        landmarks_list: List of MediaPipe pose landmarks
-        landmark_indices: List of landmark indices to draw
-        per_frame_status: Optional dict mapping frame index to status dict
-        fps: Frames per second (unused, kept for compatibility)
-    
-    Returns:
-        List of annotated frames with landmarks drawn
-    """
-    annotated_frames = []
-    for frame_idx, (frame, landmarks) in enumerate(zip(frames, landmarks_list)):
-        annotated = frame.copy()
-        if landmarks:
-            h, w, _ = frame.shape
-            frame_status = per_frame_status.get(frame_idx) if per_frame_status else None
-            
-            _draw_torso_segment(annotated, landmarks, h, w, frame_status)
-            _draw_quad_segments(annotated, landmarks, h, w, frame_status)
-            
-            colors = _get_landmark_colors(landmarks, frame_status, landmark_indices)
-            
-            for idx in landmark_indices:
-                if idx < len(landmarks.landmark) and landmarks.landmark[idx]:
-                    lm = landmarks.landmark[idx]
-                    x, y = int(lm.x * w), int(lm.y * h)
-                    cv2.circle(annotated, (x, y), 5, colors.get(idx, (0, 255, 0)), -1)
-        
-        annotated_frames.append(annotated)
-    return annotated_frames

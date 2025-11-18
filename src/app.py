@@ -13,13 +13,7 @@ import time
 from threading import Lock
 from src.shared.upload_video.upload_video import (
     accept_video_file,
-    save_video_temp,
-    extract_frames,
-    save_frames_as_video
-)
-from src.shared.pose_estimation.pose_estimation import (
-    process_frames_with_pose,
-    draw_landmarks_on_frames
+    save_video_temp
 )
 from src.exercise_1.calculation.calculation import calculate_squat_form
 
@@ -291,11 +285,13 @@ def build_analysis_response(exercise: int, frame_count: int, calculation_results
 
 def _build_response(exercise: int, file_info: dict, file_size: int, frame_count: int, output_path: Path,
                    output_filename: str, calculation_results: dict, camera_angle_info: dict,
-                   form_analysis: dict, squat_phases: dict) -> dict:
+                   form_analysis: dict, squat_phases: dict, visualization_url: str = None) -> dict:
     """Upload-specific response builder. Adds upload metadata to general analysis response."""
     analysis_response = build_analysis_response(
         exercise, frame_count, calculation_results, camera_angle_info, form_analysis, squat_phases
     )
+    if visualization_url is None:
+        visualization_url = f"http://127.0.0.1:8000/outputs/{output_filename}"
     analysis_response.update({
         "message": "Video processed successfully",
         "filename": file_info["filename"],
@@ -303,7 +299,7 @@ def _build_response(exercise: int, file_info: dict, file_size: int, frame_count:
         "size": file_size,
         "size_mb": round(file_size / (1024 * 1024), 2),
         "visualization_path": str(output_path),
-        "visualization_url": f"http://127.0.0.1:8000/outputs/{output_filename}"
+        "visualization_url": visualization_url
     })
     return analysis_response
 
@@ -321,7 +317,6 @@ def create_visualization_streaming(video_path: str, landmarks_list: list, fps: f
     
     landmark_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 29, 30, 31, 32]
     
-    # Calculate per-frame status if data is available
     per_frame_status = None
     if calculation_results and form_analysis:
         from src.shared.visualization.per_frame_status import calculate_per_frame_status, smooth_per_frame_status
@@ -335,94 +330,26 @@ def create_visualization_streaming(video_path: str, landmarks_list: list, fps: f
             glute_dominance_status=glute_dominance_status
         )
         
-        # Apply temporal smoothing to reduce flickering (0.2s window)
         per_frame_status = smooth_per_frame_status(per_frame_status, fps, window_duration_seconds=0.2)
     
     if output_dir is None:
         output_dir = OUTPUTS_DIR
     if output_filename is None:
         video_id = str(uuid.uuid4())
-        output_filename = f"{video_id}.mp4"
+        output_filename = f"{video_id}.mp4"  # Use .mp4 with H.264 (browser-compatible)
+    else:
+        base_name = os.path.splitext(output_filename)[0]
+        output_filename = f"{base_name}.mp4"
+    
     output_path = output_dir / output_filename
     
-    # Use streaming visualization
-    viz_stream(str(video_path), landmarks_list, str(output_path), landmark_indices, 
-               per_frame_status, fps, frame_skip)
+    actual_output_path = viz_stream(str(video_path), landmarks_list, str(output_path), landmark_indices, 
+                                    per_frame_status, fps, frame_skip)
     
-    return str(output_path), output_filename
-
-
-def create_visualization(frames: list, landmarks_list: list, fps: float, 
-                        calculation_results: dict = None, form_analysis: dict = None,
-                        output_dir: Path = None, output_filename: str = None) -> tuple:
-    """
-    Creates visualization video with configurable output location. 
-    General function usable by both upload and livestream.
+    if actual_output_path != str(output_path):
+        output_filename = os.path.basename(actual_output_path)
     
-    Args:
-        frames: List of video frames
-        landmarks_list: List of MediaPipe pose landmarks
-        fps: Frames per second
-        calculation_results: Optional dict with angles_per_frame and asymmetry_per_frame
-        form_analysis: Optional dict with form analysis results (for glute_dominance status)
-        output_dir: Optional output directory (defaults to OUTPUTS_DIR)
-        output_filename: Optional output filename (defaults to UUID)
-    
-    Returns:
-        Tuple of (output_path, output_filename)
-    """
-    landmark_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 29, 30, 31, 32]
-    
-    # Calculate per-frame status if data is available
-    per_frame_status = None
-    if calculation_results and form_analysis:
-        from src.shared.visualization.per_frame_status import calculate_per_frame_status
-        glute_dominance_status = None
-        if form_analysis.get("glute_dominance"):
-            glute_dominance_status = form_analysis["glute_dominance"].get("status")
-        
-        per_frame_status = calculate_per_frame_status(
-            angles_per_frame=calculation_results.get("angles_per_frame", {}),
-            asymmetry_per_frame=calculation_results.get("asymmetry_per_frame"),
-            glute_dominance_status=glute_dominance_status
-        )
-        
-        # Apply temporal smoothing to reduce flickering (0.2s window)
-        from src.shared.visualization.per_frame_status import smooth_per_frame_status
-        per_frame_status = smooth_per_frame_status(per_frame_status, fps, window_duration_seconds=0.2)
-    
-    annotated_frames = draw_landmarks_on_frames(frames, landmarks_list, landmark_indices, per_frame_status, fps)
-    
-    if output_dir is None:
-        output_dir = OUTPUTS_DIR
-    if output_filename is None:
-        video_id = str(uuid.uuid4())
-        output_filename = f"{video_id}.mp4"
-    output_path = output_dir / output_filename
-    save_frames_as_video(annotated_frames, str(output_path), fps)
-    return str(output_path), output_filename
-
-
-def _create_visualization(frames: list, landmarks_list: list, fps: float, 
-                         calculation_results: dict = None, form_analysis: dict = None) -> tuple:
-    """
-    Upload-specific wrapper for create_visualization. 
-    Uses default OUTPUTS_DIR. Maintains backward compatibility.
-    
-    Args:
-        frames: List of video frames
-        landmarks_list: List of MediaPipe pose landmarks
-        fps: Frames per second
-        calculation_results: Optional dict with angles_per_frame and asymmetry_per_frame
-        form_analysis: Optional dict with form analysis results
-    
-    Returns:
-        Tuple of (output_path, output_filename)
-    """
-    output_path, output_filename = create_visualization(
-        frames, landmarks_list, fps, calculation_results, form_analysis, OUTPUTS_DIR, None
-    )
-    return output_path, output_filename
+    return actual_output_path, output_filename
 
 
 def _handle_upload_errors(e: Exception):
@@ -440,7 +367,6 @@ def _get_client_ip(request: Request) -> str:
     """Extracts client IP address, considering common proxy headers."""
     x_forwarded_for = request.headers.get("X-Forwarded-For")
     if x_forwarded_for:
-        # Use first IP in list
         return x_forwarded_for.split(",")[0].strip()
     client = request.client
     if client and client.host:
@@ -558,7 +484,6 @@ def _check_rate_limit(client_ip: str) -> None:
     now = time.time()
     with _upload_rate_limit_lock:
         request_times = _upload_rate_limit_store.setdefault(client_ip, deque())
-        # Remove timestamps outside the window
         while request_times and request_times[0] <= now - RATE_LIMIT_WINDOW_SECONDS:
             request_times.popleft()
         if not request_times:
@@ -575,7 +500,6 @@ def _check_rate_limit(client_ip: str) -> None:
                 }
             )
         request_times.append(now)
-        # Prevent unbounded growth
         if not request_times:
             del _upload_rate_limit_store[client_ip]
 
@@ -596,7 +520,6 @@ async def upload_video(
         file_size = os.path.getsize(temp_path)
         file_info = await validate_uploaded_file(temp_path, video, file_size)
         
-        # Get video properties to determine frame_skip for downsampling
         import cv2
         cap = cv2.VideoCapture(temp_path)
         if not cap.isOpened():
@@ -608,20 +531,17 @@ async def upload_video(
         fps_from_cap = cap.get(cv2.CAP_PROP_FPS) or 30.0
         cap.release()
         
-        # Calculate frame_skip for downsampling (max 300 frames)
         MAX_FRAMES = 300
         frame_skip = 1
         if total_frames > MAX_FRAMES:
             frame_skip = max(1, total_frames // MAX_FRAMES)
         
-        # Use streaming pose estimation (never loads all frames into memory)
         from src.shared.pose_estimation.pose_estimation import process_video_streaming_pose
         required_landmarks = get_required_landmarks(exercise)
         landmarks_list, fps, frame_count, validation_result = process_video_streaming_pose(
             temp_path, validate=True, required_landmarks=required_landmarks, frame_skip=frame_skip
         )
         
-        # Validate with frame_count (no frames list needed)
         if validation_result and not validation_result.get("is_valid", True):
             raise HTTPException(status_code=400, detail={
                 "error": "landmark_validation_failed",
@@ -631,7 +551,6 @@ async def upload_video(
                 "recommendation": validation_result.get("recommendation", "Please ensure person is fully visible in video")
             })
         
-        # Validate video data (using frame_count instead of frames list)
         from src.shared.upload_video.video_validation import validate_fps, validate_video_duration
         fps_validation = validate_fps(fps)
         if not fps_validation.get("is_valid", True):
@@ -646,19 +565,20 @@ async def upload_video(
                 "message": duration_validation.get("errors", ["Video duration validation failed"])[0]
             })
         
-        # Process analysis (only needs landmarks, not frames)
         calc_results, cam_info, form_analysis, squat_phases = _process_video_analysis(
             video, exercise, None, fps, landmarks_list, validation_result
         )
         
-        # Use streaming visualization (reads video file, never loads all frames)
         output_path, output_filename = create_visualization_streaming(
             temp_path, landmarks_list, fps, calc_results, form_analysis,
             OUTPUTS_DIR, None, frame_skip
         )
         
+        base_url = str(request.url).replace(request.url.path, '')
+        visualization_url = f"{base_url}/outputs/{output_filename}"
+        
         return _build_response(exercise, file_info, file_size, frame_count, Path(output_path),
-                              output_filename, calc_results, cam_info, form_analysis, squat_phases)
+                              output_filename, calc_results, cam_info, form_analysis, squat_phases, visualization_url)
     except Exception as e:
         _handle_upload_errors(e)
     finally:

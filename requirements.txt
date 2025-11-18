@@ -6,6 +6,9 @@ python-multipart>=0.0.6
 # Video processing
 opencv-python-headless>=4.8.0
 numpy>=1.24.0
+imageio>=2.31.0
+imageio-ffmpeg>=0.4.9
+Pillow>=10.0.0  # Required by imageio for image processing
 
 # Pose estimation
 mediapipe>=0.10.0
