@@ -8,6 +8,63 @@ import cv2
 import math
 
 
+def process_video_streaming_pose(video_path: str, validate: bool = False, required_landmarks: list = None, frame_skip: int = 1) -> tuple:
+    """
+    Streaming version: Processes frames one at a time from video file.
+    Never keeps all frames in memory - processes and discards immediately.
+    Returns landmarks list, fps, frame_count, and optionally validation result.
+    """
+    import cv2
+    mp_pose = mp.solutions.pose
+    pose = mp_pose.Pose()
+    results = []
+    
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        pose.close()
+        if validate:
+            from src.shared.pose_estimation.landmark_validation import validate_landmarks_batch
+            validation_result = validate_landmarks_batch([], required_landmarks)
+            return [], 30.0, 0, validation_result
+        return [], 30.0, 0, None
+    
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    frame_index = 0
+    processed_count = 0
+    
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            # Only process every Nth frame if downsampling
+            if frame_index % frame_skip == 0:
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                result = pose.process(rgb_frame)
+                results.append(result.pose_landmarks)
+                processed_count += 1
+                # Frame is automatically discarded after processing
+            
+            frame_index += 1
+    finally:
+        cap.release()
+        pose.close()
+    
+    # Adjust FPS if frames were downsampled
+    if frame_skip > 1:
+        fps = fps / frame_skip
+    
+    if validate:
+        from src.shared.pose_estimation.landmark_validation import validate_landmarks_batch
+        validation_result = validate_landmarks_batch(results, required_landmarks)
+        return results, fps, processed_count, validation_result
+    
+    return results, fps, processed_count, None
+
+
 def process_frames_with_pose(frames: list, validate: bool = False, required_landmarks: list = None) -> tuple:
     """
     Processes frames with MediaPipe Pose to extract keypoints.
@@ -223,6 +280,90 @@ def _get_landmark_colors(landmarks, frame_status: dict, landmark_indices: list) 
             colors[30] = color
     
     return colors
+
+
+def create_visualization_streaming(video_path: str, landmarks_list: list, output_path: str,
+                                   landmark_indices: list, per_frame_status: dict = None, 
+                                   fps: float = 30.0, frame_skip: int = 1) -> str:
+    """
+    Streaming version: Reads frames from video, draws landmarks, writes directly to output video.
+    Never keeps all frames in memory - processes one frame at a time.
+    
+    Args:
+        video_path: Path to input video file
+        landmarks_list: List of MediaPipe pose landmarks (must match processed frames)
+        output_path: Path to output video file
+        landmark_indices: List of landmark indices to draw
+        per_frame_status: Optional dict mapping frame index to status dict
+        fps: Frames per second for output video
+        frame_skip: Frame skip factor (must match the one used for pose estimation)
+    
+    Returns:
+        Path to output video file
+    """
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Could not open video file: {video_path}")
+    
+    # Get video properties
+    input_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    # Create video writer
+    fourcc = cv2.VideoWriter_fourcc(*'avc1')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    
+    if not out.isOpened():
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    
+    if not out.isOpened():
+        cap.release()
+        raise ValueError(f"Could not create output video file: {output_path}")
+    
+    frame_index = 0
+    landmark_index = 0
+    
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            # Only process frames that match the downsampled landmarks
+            if frame_index % frame_skip == 0:
+                if landmark_index >= len(landmarks_list):
+                    break
+                
+                annotated = frame.copy()
+                landmarks = landmarks_list[landmark_index]
+                
+                if landmarks:
+                    h, w, _ = frame.shape
+                    frame_status = per_frame_status.get(landmark_index) if per_frame_status else None
+                    
+                    _draw_torso_segment(annotated, landmarks, h, w, frame_status)
+                    _draw_quad_segments(annotated, landmarks, h, w, frame_status)
+                    
+                    colors = _get_landmark_colors(landmarks, frame_status, landmark_indices)
+                    
+                    for idx in landmark_indices:
+                        if idx < len(landmarks.landmark) and landmarks.landmark[idx]:
+                            lm = landmarks.landmark[idx]
+                            x, y = int(lm.x * w), int(lm.y * h)
+                            cv2.circle(annotated, (x, y), 5, colors.get(idx, (0, 255, 0)), -1)
+                
+                # Write frame directly to output video (don't keep in memory)
+                out.write(annotated)
+                landmark_index += 1
+            
+            frame_index += 1
+    finally:
+        cap.release()
+        out.release()
+    
+    return output_path
 
 
 def draw_landmarks_on_frames(frames: list, landmarks_list: list, 

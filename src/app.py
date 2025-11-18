@@ -308,6 +308,50 @@ def _build_response(exercise: int, file_info: dict, file_size: int, frame_count:
     return analysis_response
 
 
+def create_visualization_streaming(video_path: str, landmarks_list: list, fps: float,
+                                   calculation_results: dict = None, form_analysis: dict = None,
+                                   output_dir: Path = None, output_filename: str = None,
+                                   frame_skip: int = 1) -> tuple:
+    """
+    Streaming version: Creates visualization by reading frames from video file.
+    Never keeps all frames in memory - processes one frame at a time.
+    """
+    from src.shared.pose_estimation.pose_estimation import create_visualization_streaming as viz_stream
+    import uuid
+    
+    landmark_indices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 29, 30, 31, 32]
+    
+    # Calculate per-frame status if data is available
+    per_frame_status = None
+    if calculation_results and form_analysis:
+        from src.shared.visualization.per_frame_status import calculate_per_frame_status, smooth_per_frame_status
+        glute_dominance_status = None
+        if form_analysis.get("glute_dominance"):
+            glute_dominance_status = form_analysis["glute_dominance"].get("status")
+        
+        per_frame_status = calculate_per_frame_status(
+            angles_per_frame=calculation_results.get("angles_per_frame", {}),
+            asymmetry_per_frame=calculation_results.get("asymmetry_per_frame"),
+            glute_dominance_status=glute_dominance_status
+        )
+        
+        # Apply temporal smoothing to reduce flickering (0.2s window)
+        per_frame_status = smooth_per_frame_status(per_frame_status, fps, window_duration_seconds=0.2)
+    
+    if output_dir is None:
+        output_dir = OUTPUTS_DIR
+    if output_filename is None:
+        video_id = str(uuid.uuid4())
+        output_filename = f"{video_id}.mp4"
+    output_path = output_dir / output_filename
+    
+    # Use streaming visualization
+    viz_stream(str(video_path), landmarks_list, str(output_path), landmark_indices, 
+               per_frame_status, fps, frame_skip)
+    
+    return str(output_path), output_filename
+
+
 def create_visualization(frames: list, landmarks_list: list, fps: float, 
                         calculation_results: dict = None, form_analysis: dict = None,
                         output_dir: Path = None, output_filename: str = None) -> tuple:
@@ -542,7 +586,7 @@ async def upload_video(
     video: UploadFile = File(...),
     exercise: int = Form(...)
 ):
-    """Accepts video file upload and processes with pose estimation."""
+    """Accepts video file upload and processes with pose estimation using streaming to minimize memory."""
     temp_path = None
     try:
         client_ip = _get_client_ip(request)
@@ -551,38 +595,67 @@ async def upload_video(
         temp_path = await save_video_temp(video)
         file_size = os.path.getsize(temp_path)
         file_info = await validate_uploaded_file(temp_path, video, file_size)
-        frames, fps, frame_validation, fps_validation = extract_frames(temp_path, validate=True)
-        if frame_validation and not frame_validation.get("is_valid", True):
+        
+        # Get video properties to determine frame_skip for downsampling
+        import cv2
+        cap = cv2.VideoCapture(temp_path)
+        if not cap.isOpened():
             raise HTTPException(status_code=400, detail={
-                "error": "frame_extraction_failed",
-                "message": frame_validation.get("errors", ["Frame extraction failed"])[0],
-                "frame_count": frame_validation.get("frame_count", 0),
-                "valid_frame_count": frame_validation.get("valid_frame_count", 0),
-                "recommendation": frame_validation.get("recommendation", "Please try re-exporting the video")
+                "error": "video_open_failed",
+                "message": "Could not open video file for processing"
             })
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps_from_cap = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        cap.release()
+        
+        # Calculate frame_skip for downsampling (max 300 frames)
+        MAX_FRAMES = 300
+        frame_skip = 1
+        if total_frames > MAX_FRAMES:
+            frame_skip = max(1, total_frames // MAX_FRAMES)
+        
+        # Use streaming pose estimation (never loads all frames into memory)
+        from src.shared.pose_estimation.pose_estimation import process_video_streaming_pose
         required_landmarks = get_required_landmarks(exercise)
-        landmarks_list, validation_result = process_frames_with_pose(frames, validate=True, required_landmarks=required_landmarks)
-        validate_video_data(frames, fps, landmarks_list, validation_result, exercise, skip_file_validations=False)
+        landmarks_list, fps, frame_count, validation_result = process_video_streaming_pose(
+            temp_path, validate=True, required_landmarks=required_landmarks, frame_skip=frame_skip
+        )
         
-        # Store frame count before deleting frames to free memory
-        frame_count = len(frames)
+        # Validate with frame_count (no frames list needed)
+        if validation_result and not validation_result.get("is_valid", True):
+            raise HTTPException(status_code=400, detail={
+                "error": "landmark_validation_failed",
+                "message": validation_result.get("errors", ["Landmark validation failed"])[0],
+                "frame_count": frame_count,
+                "valid_landmark_count": validation_result.get("valid_landmark_count", 0),
+                "recommendation": validation_result.get("recommendation", "Please ensure person is fully visible in video")
+            })
         
-        # Delete frames after pose estimation to free memory (we only need landmarks now)
-        # Visualization will re-extract frames from video file
-        del frames
-        import gc
-        gc.collect()  # Force garbage collection
+        # Validate video data (using frame_count instead of frames list)
+        from src.shared.upload_video.video_validation import validate_fps, validate_video_duration
+        fps_validation = validate_fps(fps)
+        if not fps_validation.get("is_valid", True):
+            raise HTTPException(status_code=400, detail={
+                "error": "fps_validation_failed",
+                "message": fps_validation.get("errors", ["FPS validation failed"])[0]
+            })
+        duration_validation = validate_video_duration(frame_count, fps, max_duration_seconds=120.0)
+        if not duration_validation.get("is_valid", True):
+            raise HTTPException(status_code=400, detail={
+                "error": "video_duration_exceeded",
+                "message": duration_validation.get("errors", ["Video duration validation failed"])[0]
+            })
         
+        # Process analysis (only needs landmarks, not frames)
         calc_results, cam_info, form_analysis, squat_phases = _process_video_analysis(
-            video, exercise, None, fps, landmarks_list, validation_result  # Pass None for frames
+            video, exercise, None, fps, landmarks_list, validation_result
         )
-        # Re-extract frames for visualization only
-        frames_for_viz, _, _, _ = extract_frames(temp_path, validate=False)
-        output_path, output_filename = _create_visualization(
-            frames_for_viz, landmarks_list, fps, calc_results, form_analysis
+        
+        # Use streaming visualization (reads video file, never loads all frames)
+        output_path, output_filename = create_visualization_streaming(
+            temp_path, landmarks_list, fps, calc_results, form_analysis,
+            OUTPUTS_DIR, None, frame_skip
         )
-        del frames_for_viz  # Delete visualization frames after use
-        gc.collect()
         
         return _build_response(exercise, file_info, file_size, frame_count, Path(output_path),
                               output_filename, calc_results, cam_info, form_analysis, squat_phases)
