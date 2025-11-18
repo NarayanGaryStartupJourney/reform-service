@@ -114,13 +114,29 @@ def process_frames_from_source(source, validate: bool = True) -> tuple:
                 fps, fps_validation = detect_fps_from_video(source, 0)
                 return [], fps, frame_validation, fps_validation
             return [], 30.0, None, None
+        # Get video properties first to determine if downsampling is needed
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps_from_cap = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        duration = total_frames / fps_from_cap if fps_from_cap > 0 else 0
+        
+        # Memory optimization: downsample frames for long videos
+        # Target: max 1800 frames (~60 seconds at 30fps) to stay under ~500MB memory
+        MAX_FRAMES = 1800
+        frame_skip = 1
+        if total_frames > MAX_FRAMES:
+            frame_skip = max(1, total_frames // MAX_FRAMES)
+        
         frames = []
+        frame_index = 0
         try:
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
-                frames.append(frame)
+                # Only keep every Nth frame if downsampling
+                if frame_index % frame_skip == 0:
+                    frames.append(frame)
+                frame_index += 1
         except Exception as e:
             cap.release()
             if validate:
@@ -134,11 +150,15 @@ def process_frames_from_source(source, validate: bool = True) -> tuple:
                 return frames, fps, frame_validation, fps_validation
             return frames, 30.0, None, None
         cap.release()
+        # Adjust FPS if frames were downsampled
+        if frame_skip > 1:
+            fps_from_cap = fps_from_cap / frame_skip
         video_path = source
     elif isinstance(source, list):
         # Frame list - use directly
         frames = source
         video_path = None
+        fps_from_cap = None
     else:
         raise ValueError(f"Unsupported source type: {type(source)}")
     
@@ -146,16 +166,24 @@ def process_frames_from_source(source, validate: bool = True) -> tuple:
         from src.shared.upload_video.video_validation import validate_extracted_frames, detect_fps_from_video
         frame_validation = validate_extracted_frames(frames)
         if video_path:
-            fps, fps_validation = detect_fps_from_video(video_path, len(frames))
+            # Use adjusted FPS if available, otherwise detect from video
+            if fps_from_cap:
+                fps, fps_validation = fps_from_cap, {"is_valid": True, "fps": fps_from_cap, "warnings": []}
+            else:
+                fps, fps_validation = detect_fps_from_video(video_path, len(frames))
         else:
             fps, fps_validation = 30.0, {"is_valid": True, "fps": 30.0, "warnings": []}
         return frames, fps, frame_validation, fps_validation
     
     if video_path:
-        from src.shared.upload_video.video_validation import detect_fps_from_video
-        fps, _ = detect_fps_from_video(video_path, len(frames))
+        # Use adjusted FPS if available, otherwise detect from video
+        if fps_from_cap:
+            fps = fps_from_cap
+        else:
+            from src.shared.upload_video.video_validation import detect_fps_from_video
+            fps, _ = detect_fps_from_video(video_path, len(frames))
     else:
-        fps = 30.0
+        fps = fps_from_cap if fps_from_cap else 30.0
     return frames, fps, None, None
 
 
