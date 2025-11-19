@@ -78,6 +78,76 @@ async def health():
     return {"status": "healthy"}
 
 
+@app.get("/api/check-anonymous-limit")
+async def check_anonymous_limit(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """Check if anonymous user has reached analysis limit. Returns limit status without requiring file upload."""
+    # Check if user is authenticated
+    user = None
+    if credentials:
+        from src.shared.auth.auth import verify_token
+        from src.shared.auth.database import User
+        payload = verify_token(credentials.credentials)
+        if payload:
+            user_id = payload.get("sub")
+            if user_id:
+                db = next(get_db())
+                try:
+                    user = db.query(User).filter(User.id == user_id).first()
+                except Exception:
+                    pass
+                finally:
+                    db.close()
+    
+    # If authenticated, no limit applies (they use token system)
+    if credentials is not None and user is not None:
+        return {
+            "has_limit": False,
+            "is_authenticated": True,
+            "message": "No limit for authenticated users"
+        }
+    
+    # Check anonymous limit
+    client_ip = _get_client_ip(request)
+    db = next(get_db())
+    try:
+        from src.shared.auth.database import Base, engine
+        Base.metadata.create_all(bind=engine, checkfirst=True)
+        
+        anonymous_record = db.query(AnonymousAnalysis).filter(
+            AnonymousAnalysis.ip_address == client_ip
+        ).first()
+        
+        if anonymous_record and anonymous_record.analysis_count >= 1:
+            return {
+                "has_limit": True,
+                "limit_reached": True,
+                "analyses_completed": anonymous_record.analysis_count,
+                "limit": 1,
+                "message": "Anonymous users are limited to 1 analysis. Please sign up for unlimited analyses."
+            }
+        else:
+            return {
+                "has_limit": True,
+                "limit_reached": False,
+                "analyses_completed": anonymous_record.analysis_count if anonymous_record else 0,
+                "limit": 1,
+                "message": "You have 1 free analysis remaining"
+            }
+    except Exception as e:
+        import logging
+        logging.warning(f"Failed to check anonymous limit: {str(e)}")
+        return {
+            "has_limit": True,
+            "limit_reached": False,
+            "error": "Could not check limit status"
+        }
+    finally:
+        db.close()
+
+
 @app.get("/robots.txt")
 async def robots_txt():
     """Returns robots.txt to disallow crawlers from accessing output and tmp directories."""
@@ -613,29 +683,29 @@ async def upload_video(
         client_ip = _get_client_ip(request)
         _check_rate_limit(client_ip)
         _validate_exercise(exercise)
-        temp_path = await save_video_temp(video)
-        file_size = os.path.getsize(temp_path)
         
-        # For logged-out users: enforce limits (1 analysis per IP, max 200MB)
-        # Only check anonymous limits if user is not authenticated
-        # Check both: no credentials provided OR credentials provided but user not found
+        # Check authentication status
         is_authenticated = credentials is not None and user is not None
-        if not is_authenticated:
-            MAX_FILE_SIZE_ANONYMOUS = 200 * 1024 * 1024  # 200MB
-            if file_size >= MAX_FILE_SIZE_ANONYMOUS:
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
+        
+        # For logged-in users: check if they have at least 1 token BEFORE upload (base cost is always 1)
+        if is_authenticated:
+            # Quick check: ensure user has at least 1 token before upload
+            # Full check with file size will happen after upload
+            if user.tokens_remaining < 1:
                 raise HTTPException(
-                    status_code=400,
+                    status_code=402,
                     detail={
-                        "error": "file_too_large_anonymous",
-                        "message": "File size exceeds 200MB limit for anonymous users. Please sign up for larger file support.",
-                        "max_size_mb": 200,
-                        "file_size_mb": round(file_size / (1024 * 1024), 2)
+                        "error": "insufficient_tokens",
+                        "message": f"Insufficient tokens. You need at least 1 token but only have {user.tokens_remaining} remaining.",
+                        "tokens_required": 1,
+                        "tokens_remaining": user.tokens_remaining,
+                        "tokens_reset": "Daily tokens reset at midnight UTC"
                     }
                 )
-            
-            # Check if IP has already completed 1 analysis
+        
+        # For logged-out users: check IP limit BEFORE upload (efficient early rejection)
+        if not is_authenticated:
+            # Check if IP has already completed 1 analysis (before uploading file)
             db = next(get_db())
             try:
                 # Ensure table exists (fallback if startup init failed)
@@ -647,8 +717,6 @@ async def upload_video(
                 ).first()
                 
                 if anonymous_record and anonymous_record.analysis_count >= 1:
-                    if os.path.exists(temp_path):
-                        os.unlink(temp_path)
                     db.close()
                     raise HTTPException(
                         status_code=403,
@@ -671,22 +739,53 @@ async def upload_video(
             finally:
                 db.close()
         
-        # Check tokens for logged-in users before processing
-        if user:
-            token_cost = calculate_token_cost(file_size)
-            if user.tokens_remaining < token_cost:
+        # Now upload the file
+        temp_path = await save_video_temp(video)
+        file_size = os.path.getsize(temp_path)
+        
+        # Check file size limit for anonymous users (after upload but before processing)
+        if not is_authenticated:
+            MAX_FILE_SIZE_ANONYMOUS = 200 * 1024 * 1024  # 200MB
+            if file_size >= MAX_FILE_SIZE_ANONYMOUS:
                 if os.path.exists(temp_path):
                     os.unlink(temp_path)
                 raise HTTPException(
-                    status_code=402,  # Payment Required
+                    status_code=400,
                     detail={
-                        "error": "insufficient_tokens",
-                        "message": f"Insufficient tokens. You need {token_cost:.1f} tokens but only have {user.tokens_remaining} remaining.",
-                        "tokens_required": round(token_cost, 1),
-                        "tokens_remaining": user.tokens_remaining,
-                        "tokens_reset": "Daily tokens reset at midnight UTC"
+                        "error": "file_too_large_anonymous",
+                        "message": "File size exceeds 200MB limit for anonymous users. Please sign up for larger file support.",
+                        "max_size_mb": 200,
+                        "file_size_mb": round(file_size / (1024 * 1024), 2)
                     }
                 )
+        
+        # Full token check for logged-in users (after we know file size)
+        if is_authenticated:
+            # Refresh user from DB to get latest token count
+            db = next(get_db())
+            try:
+                db.refresh(user)
+                token_cost = calculate_token_cost(file_size)
+                if user.tokens_remaining < token_cost:
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+                    db.close()
+                    raise HTTPException(
+                        status_code=402,  # Payment Required
+                        detail={
+                            "error": "insufficient_tokens",
+                            "message": f"Insufficient tokens. You need {token_cost:.1f} tokens but only have {user.tokens_remaining} remaining.",
+                            "tokens_required": round(token_cost, 1),
+                            "tokens_remaining": user.tokens_remaining,
+                            "tokens_reset": "Daily tokens reset at midnight UTC"
+                        }
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                db.rollback()
+            finally:
+                db.close()
         
         file_info = await validate_uploaded_file(temp_path, video, file_size)
         
