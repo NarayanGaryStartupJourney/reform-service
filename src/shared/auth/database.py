@@ -69,6 +69,16 @@ class User(Base):
     last_token_reset = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class AnonymousAnalysis(Base):
+    """Track analyses by anonymous (logged-out) users by IP address."""
+    __tablename__ = "anonymous_analyses"
+
+    ip_address = Column(String, primary_key=True, index=True)
+    analysis_count = Column(Integer, default=0, nullable=False)
+    first_analysis_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_analysis_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 def init_db():
     """Initialize database tables."""
     import logging

@@ -15,7 +15,7 @@ from src.shared.upload_video.upload_video import (
     save_video_temp
 )
 from src.exercise_1.calculation.calculation import calculate_squat_form
-from src.shared.auth.database import init_db, get_db, reset_daily_tokens_if_needed, calculate_token_cost
+from src.shared.auth.database import init_db, get_db, reset_daily_tokens_if_needed, calculate_token_cost, AnonymousAnalysis
 from src.shared.auth.routes import router as auth_router
 from src.shared.auth.dependencies import security
 from fastapi.security import HTTPAuthorizationCredentials
@@ -614,6 +614,47 @@ async def upload_video(
         _validate_exercise(exercise)
         temp_path = await save_video_temp(video)
         file_size = os.path.getsize(temp_path)
+        
+        # For logged-out users: enforce limits (1 analysis per IP, max 200MB)
+        if not user:
+            MAX_FILE_SIZE_ANONYMOUS = 200 * 1024 * 1024  # 200MB
+            if file_size >= MAX_FILE_SIZE_ANONYMOUS:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "file_too_large_anonymous",
+                        "message": "File size exceeds 200MB limit for anonymous users. Please sign up for larger file support.",
+                        "max_size_mb": 200,
+                        "file_size_mb": round(file_size / (1024 * 1024), 2)
+                    }
+                )
+            
+            # Check if IP has already completed 1 analysis
+            db = next(get_db())
+            try:
+                anonymous_record = db.query(AnonymousAnalysis).filter(
+                    AnonymousAnalysis.ip_address == client_ip
+                ).first()
+                
+                if anonymous_record and anonymous_record.analysis_count >= 1:
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+                    db.close()
+                    raise HTTPException(
+                        status_code=403,
+                        detail={
+                            "error": "analysis_limit_reached",
+                            "message": "Anonymous users are limited to 1 analysis. Please sign up for unlimited analyses.",
+                            "analyses_completed": anonymous_record.analysis_count,
+                            "limit": 1
+                        }
+                    )
+            except Exception:
+                db.rollback()
+            finally:
+                db.close()
         
         # Check tokens for logged-in users before processing
         if user:
