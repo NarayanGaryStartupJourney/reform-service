@@ -938,32 +938,47 @@ async def upload_video(
                 # (user object from earlier session is detached, so we need to query again using user_id)
                 from src.shared.auth.database import User
                 current_user = db.query(User).filter(User.id == user_id).first()
-                if current_user:
-                    # Reset tokens if it's a new day (in case day changed during analysis)
-                    tokens_before_reset = current_user.tokens_remaining
-                    reset_daily_tokens_if_needed(current_user, db)
-                    # If tokens were reset, we need to re-query to get fresh state
-                    if tokens_before_reset != current_user.tokens_remaining:
-                        db.commit()
-                        # Re-query to get fresh state after commit (prevents invalid state error)
-                        current_user = db.query(User).filter(User.id == user_id).first()
-                    # Deduct tokens
-                    current_user.tokens_remaining = max(0, current_user.tokens_remaining - token_cost)
-                    # Commit the token deduction
-                    db.commit()
-                    # Read the value we just set (no refresh needed, we have it)
-                    tokens_used = round(token_cost, 1)
-                    tokens_remaining = int(current_user.tokens_remaining)
-                else:
-                    # User not found - this shouldn't happen but handle gracefully
+                if not current_user:
                     import logging
                     logging.error(f"User {user_id} not found when trying to deduct tokens")
                     tokens_used = None
                     tokens_remaining = None
+                else:
+                    # Store initial token count before any modifications
+                    initial_tokens = current_user.tokens_remaining
+                    
+                    # Reset tokens if it's a new day (in case day changed during analysis)
+                    reset_daily_tokens_if_needed(current_user, db)
+                    
+                    # Check if tokens were reset and get current count
+                    if initial_tokens != current_user.tokens_remaining:
+                        # Tokens were reset, commit and re-query
+                        db.commit()
+                        # Re-query to get fresh state after commit (prevents invalid state error)
+                        current_user = db.query(User).filter(User.id == user_id).first()
+                        if not current_user:
+                            raise ValueError(f"User {user_id} not found after token reset")
+                        # Update initial_tokens to reflect reset
+                        initial_tokens = current_user.tokens_remaining
+                    
+                    # Calculate final token count after deduction (use initial_tokens to avoid accessing expired object)
+                    final_token_count = max(0, initial_tokens - token_cost)
+                    
+                    # Deduct tokens
+                    current_user.tokens_remaining = final_token_count
+                    # Commit the token deduction
+                    db.commit()
+                    
+                    # Use the calculated value instead of reading from expired object
+                    tokens_used = round(token_cost, 1)
+                    tokens_remaining = int(final_token_count)
             except Exception as e:
                 db.rollback()
                 import logging
                 logging.error(f"Failed to deduct tokens: {str(e)}")
+                # Set tokens to None on error so response doesn't include invalid data
+                tokens_used = None
+                tokens_remaining = None
             finally:
                 db.close()
         
