@@ -5,6 +5,13 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime, date
 import os
 
+# Load environment variables from .env file (for local development)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed, skip (fine for production)
+
 # PostgreSQL database configuration
 # DATABASE_URL should be set as an environment variable (e.g., from Heroku)
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -84,7 +91,7 @@ def get_db():
 
 
 def reset_daily_tokens_if_needed(user: User, db) -> None:
-    """Reset user's tokens to 10 if it's a new day."""
+    """Reset user's tokens to 10 if it's a new day. Does NOT commit - caller must commit."""
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
     last_reset = user.last_token_reset
@@ -99,7 +106,7 @@ def reset_daily_tokens_if_needed(user: User, db) -> None:
         if last_reset.date() < now.date():
             user.tokens_remaining = 10
             user.last_token_reset = now
-            db.commit()
+            # Don't commit here - let the caller commit after all changes
 
 
 def calculate_token_cost(file_size_bytes: int) -> float:

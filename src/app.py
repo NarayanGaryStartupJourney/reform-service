@@ -686,7 +686,12 @@ async def upload_video(
                         detail="User not found"
                     )
                 # Reset tokens if it's a new day
+                tokens_before = user.tokens_remaining
                 reset_daily_tokens_if_needed(user, db)
+                # If tokens were reset, commit the change
+                if tokens_before != user.tokens_remaining:
+                    db.commit()
+                    db.refresh(user)
                 # Quick check: ensure user has at least 1 token before upload
                 # Full check with file size will happen after upload
                 if user.tokens_remaining < 1:
@@ -783,7 +788,12 @@ async def upload_video(
                         detail="User not found"
                     )
                 # Reset tokens if it's a new day
+                tokens_before = current_user.tokens_remaining
                 reset_daily_tokens_if_needed(current_user, db)
+                # If tokens were reset, commit the change
+                if tokens_before != current_user.tokens_remaining:
+                    db.commit()
+                    db.refresh(current_user)
                 token_cost = calculate_token_cost(file_size)
                 if current_user.tokens_remaining < token_cost:
                     if os.path.exists(temp_path):
@@ -927,12 +937,21 @@ async def upload_video(
                 current_user = db.query(User).filter(User.id == user_id).first()
                 if current_user:
                     # Reset tokens if it's a new day (in case day changed during analysis)
+                    # This modifies the object but doesn't commit
                     reset_daily_tokens_if_needed(current_user, db)
+                    # Deduct tokens
                     current_user.tokens_remaining = max(0, current_user.tokens_remaining - token_cost)
+                    # Commit all changes at once (token reset + deduction)
                     db.commit()
-                    db.refresh(current_user)  # Refresh to get updated value
+                    # Read the value we just set (no refresh needed, we have it)
                     tokens_used = round(token_cost, 1)
                     tokens_remaining = int(current_user.tokens_remaining)
+                else:
+                    # User not found - this shouldn't happen but handle gracefully
+                    import logging
+                    logging.error(f"User {user_id} not found when trying to deduct tokens")
+                    tokens_used = None
+                    tokens_remaining = None
             except Exception as e:
                 db.rollback()
                 import logging

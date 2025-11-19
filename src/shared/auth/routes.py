@@ -150,8 +150,12 @@ async def get_current_user_info(
     """Get current user information."""
     # Reset tokens if it's a new day
     from src.shared.auth.database import reset_daily_tokens_if_needed
+    tokens_before = current_user.tokens_remaining
     reset_daily_tokens_if_needed(current_user, db)
-    db.refresh(current_user)
+    # If tokens were reset, commit the change
+    if tokens_before != current_user.tokens_remaining:
+        db.commit()
+        db.refresh(current_user)
     
     return UserResponse(
         id=current_user.id,
