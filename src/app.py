@@ -659,49 +659,57 @@ async def upload_video(
     
     try:
         # Check if user is authenticated and apply token system
+        user_id = None
         if credentials:
             from src.shared.auth.auth import verify_token
-            from src.shared.auth.database import User
             payload = verify_token(credentials.credentials)
             if payload:
                 user_id = payload.get("sub")
-                if user_id:
-                    db = next(get_db())
-                    try:
-                        user = db.query(User).filter(User.id == user_id).first()
-                        if user:
-                            # Reset tokens if it's a new day
-                            reset_daily_tokens_if_needed(user, db)
-                            
-                            # Calculate token cost for this analysis
-                            # We'll get file_size after saving, so we'll check tokens after that
-                    except Exception:
-                        pass  # If DB access fails, continue without token check
-                    finally:
-                        db.close()
         
         client_ip = _get_client_ip(request)
         _check_rate_limit(client_ip)
         _validate_exercise(exercise)
         
         # Check authentication status
-        is_authenticated = credentials is not None and user is not None
+        is_authenticated = credentials is not None and user_id is not None
         
         # For logged-in users: check if they have at least 1 token BEFORE upload (base cost is always 1)
         if is_authenticated:
-            # Quick check: ensure user has at least 1 token before upload
-            # Full check with file size will happen after upload
-            if user.tokens_remaining < 1:
-                raise HTTPException(
-                    status_code=402,
-                    detail={
-                        "error": "insufficient_tokens",
-                        "message": f"Insufficient tokens. You need at least 1 token but only have {user.tokens_remaining} remaining.",
-                        "tokens_required": 1,
-                        "tokens_remaining": user.tokens_remaining,
-                        "tokens_reset": "Daily tokens reset at midnight UTC"
-                    }
-                )
+            # Fetch user to check token count
+            from src.shared.auth.database import User
+            db = next(get_db())
+            try:
+                user = db.query(User).filter(User.id == user_id).first()
+                if not user:
+                    db.close()
+                    raise HTTPException(
+                        status_code=401,
+                        detail="User not found"
+                    )
+                # Reset tokens if it's a new day
+                reset_daily_tokens_if_needed(user, db)
+                # Quick check: ensure user has at least 1 token before upload
+                # Full check with file size will happen after upload
+                if user.tokens_remaining < 1:
+                    db.close()
+                    raise HTTPException(
+                        status_code=402,
+                        detail={
+                            "error": "insufficient_tokens",
+                            "message": f"Insufficient tokens. You need at least 1 token but only have {user.tokens_remaining} remaining.",
+                            "tokens_required": 1,
+                            "tokens_remaining": user.tokens_remaining,
+                            "tokens_reset": "Daily tokens reset at midnight UTC"
+                        }
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                import logging
+                logging.warning(f"Failed to check user tokens: {str(e)}")
+                db.rollback()
+            finally:
+                db.close()
         
         # For logged-out users: check IP limit BEFORE upload (efficient early rejection)
         if not is_authenticated:
@@ -900,14 +908,22 @@ async def upload_video(
             token_cost = calculate_token_cost(file_size)
             db = next(get_db())
             try:
-                # Refresh user from DB to get latest token count
-                db.refresh(user)
-                user.tokens_remaining = max(0, user.tokens_remaining - token_cost)
-                db.commit()
-                tokens_used = round(token_cost, 1)
-                tokens_remaining = int(user.tokens_remaining)
-            except Exception:
+                # Re-fetch user from DB in this session to get latest token count
+                # (user object from earlier session is detached, so we need to query again using user_id)
+                from src.shared.auth.database import User
+                current_user = db.query(User).filter(User.id == user_id).first()
+                if current_user:
+                    # Reset tokens if it's a new day (in case day changed during analysis)
+                    reset_daily_tokens_if_needed(current_user, db)
+                    current_user.tokens_remaining = max(0, current_user.tokens_remaining - token_cost)
+                    db.commit()
+                    db.refresh(current_user)  # Refresh to get updated value
+                    tokens_used = round(token_cost, 1)
+                    tokens_remaining = int(current_user.tokens_remaining)
+            except Exception as e:
                 db.rollback()
+                import logging
+                logging.error(f"Failed to deduct tokens: {str(e)}")
             finally:
                 db.close()
         
@@ -915,7 +931,7 @@ async def upload_video(
                                   output_filename, calc_results, cam_info, form_analysis, squat_phases, visualization_url)
         
         # Add token information to response if user is logged in
-        if user:
+        if is_authenticated and tokens_used is not None:
             response["tokens_used"] = tokens_used
             response["tokens_remaining"] = tokens_remaining
         
