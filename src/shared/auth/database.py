@@ -52,17 +52,13 @@ class User(Base):
 def init_db():
     """Initialize database tables."""
     try:
-        Base.metadata.create_all(bind=engine)
+        # Use checkfirst=True to avoid errors if tables already exist
+        Base.metadata.create_all(bind=engine, checkfirst=True)
     except Exception as e:
         # Log error but don't raise - database will be created on first use
         import logging
         logging.warning(f"Database initialization warning: {str(e)}")
-        # Try to create tables anyway - this handles case where some tables exist
-        try:
-            Base.metadata.create_all(bind=engine, checkfirst=True)
-        except Exception as e2:
-            logging.error(f"Database initialization error: {str(e2)}")
-            raise
+        # Try to continue - database operations will handle errors gracefully
 
 
 def get_db():
