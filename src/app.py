@@ -32,14 +32,16 @@ app = FastAPI(
 # Initialize database on startup
 @app.on_event("startup")
 async def startup_event():
+    import logging
     try:
         init_db()
+        logging.info("Database initialization completed on startup")
     except Exception as e:
         # Log error but don't crash the app
         # Database will be created on first use if needed
-        import logging
-        logging.warning(f"Database initialization warning on startup: {str(e)}")
+        logging.error(f"Database initialization error on startup: {str(e)}")
         # Try to continue - database operations will handle errors gracefully
+        # Tables will be created on first auth request as fallback
 
 # Include auth routes
 app.include_router(auth_router)

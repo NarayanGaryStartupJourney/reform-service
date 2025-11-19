@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from datetime import datetime
+from typing import List
 from src.shared.auth.database import get_db, User
 from src.shared.auth.auth import (
     hash_password,
@@ -25,6 +26,13 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 @router.post("/signup", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def signup(request: SignupRequest, db: Session = Depends(get_db)):
     """Create a new user account."""
+    # Ensure database tables exist (fallback if startup init failed)
+    try:
+        from src.shared.auth.database import Base, engine
+        Base.metadata.create_all(bind=engine, checkfirst=True)
+    except Exception:
+        pass  # Tables might already exist, continue anyway
+    
     # Check if user already exists
     existing_user = db.query(User).filter(User.email == request.email).first()
     if existing_user:
@@ -167,7 +175,7 @@ async def change_password(
     return {"message": "Password changed successfully"}
 
 
-@router.get("/admin/users", response_model=list[UserResponse])
+@router.get("/admin/users", response_model=List[UserResponse])
 async def list_all_users(db: Session = Depends(get_db)):
     """Temporary admin endpoint to list all users. Remove in production."""
     users = db.query(User).all()
