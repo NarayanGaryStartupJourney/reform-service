@@ -26,68 +26,86 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 @router.post("/signup", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def signup(request: SignupRequest, db: Session = Depends(get_db)):
     """Create a new user account."""
+    import logging
     # Ensure database tables exist (fallback if startup init failed)
     try:
         from src.shared.auth.database import Base, engine
         Base.metadata.create_all(bind=engine, checkfirst=True)
-    except Exception:
-        pass  # Tables might already exist, continue anyway
-    
-    # Check if user already exists
-    existing_user = db.query(User).filter(User.email == request.email).first()
-    if existing_user:
+    except Exception as e:
+        logging.error(f"Database table creation error: {str(e)}")
+        # Don't fail silently - if tables can't be created, we have a problem
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database initialization failed. Please try again later."
         )
     
-    # Validate password length
-    if len(request.password) < 8:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Password must be at least 8 characters"
-        )
-    
-    # Bcrypt has a 72-byte limit, warn if password is too long
-    password_bytes = request.password.encode('utf-8')
-    if len(password_bytes) > 72:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Password is too long (maximum 72 bytes). Please use a shorter password."
-        )
-    
-    # Create new user
-    user_id = generate_user_id()
-    password_hash = hash_password(request.password)
-    
-    # Combine first_name and last_name into full_name for database storage
-    full_name = f"{request.first_name.strip()} {request.last_name.strip()}".strip()
+    try:
+        # Check if user already exists
+        existing_user = db.query(User).filter(User.email == request.email).first()
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
+        
+        # Validate password length
+        if len(request.password) < 8:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Password must be at least 8 characters"
+            )
+        
+        # Bcrypt has a 72-byte limit, warn if password is too long
+        password_bytes = request.password.encode('utf-8')
+        if len(password_bytes) > 72:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Password is too long (maximum 72 bytes). Please use a shorter password."
+            )
+        
+        # Create new user
+        user_id = generate_user_id()
+        password_hash = hash_password(request.password)
+        
+        # Combine first_name and last_name into full_name for database storage
+        full_name = f"{request.first_name.strip()} {request.last_name.strip()}".strip()
 
-    new_user = User(
-        id=user_id,
-        email=request.email,
-        password_hash=password_hash,
-        full_name=full_name,
-        is_verified=False,  # Email verification to be implemented later
-        created_at=datetime.utcnow(),
-        tokens_remaining=10,  # New users start with 10 tokens
-        last_token_reset=datetime.utcnow()
-    )
-    
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    
-    # Create access token
-    access_token = create_access_token(data={"sub": user_id, "email": request.email})
-    
-    return TokenResponse(
-        access_token=access_token,
-        token_type="bearer",
-        user_id=user_id,
-        email=request.email,
-        full_name=full_name
-    )
+        new_user = User(
+            id=user_id,
+            email=request.email,
+            password_hash=password_hash,
+            full_name=full_name,
+            is_verified=False,  # Email verification to be implemented later
+            created_at=datetime.utcnow(),
+            tokens_remaining=10,  # New users start with 10 tokens
+            last_token_reset=datetime.utcnow()
+        )
+        
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+        
+        # Create access token
+        access_token = create_access_token(data={"sub": user_id, "email": request.email})
+        
+        return TokenResponse(
+            access_token=access_token,
+            token_type="bearer",
+            user_id=user_id,
+            email=request.email,
+            full_name=full_name
+        )
+    except HTTPException:
+        # Re-raise HTTP exceptions (validation errors, etc.)
+        raise
+    except Exception as e:
+        # Log database errors for debugging
+        logging.error(f"Signup error: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create account. Please try again later."
+        )
 
 
 @router.post("/login", response_model=TokenResponse)
