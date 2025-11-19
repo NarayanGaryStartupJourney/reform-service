@@ -31,13 +31,16 @@ if "sqlite" in DATABASE_URL:
                 os.makedirs(db_dir, exist_ok=True)
 
 # Use pool_pre_ping to check connections before using them (helps with SQLite on Heroku)
-# Use pool_recycle for connection recycling
-engine = create_engine(
-    DATABASE_URL, 
-    connect_args=connect_args,
-    pool_pre_ping=True,  # Verify connections before using
-    pool_recycle=3600 if "sqlite" not in DATABASE_URL else None  # Recycle connections after 1 hour (not for SQLite)
-)
+# Use pool_recycle for connection recycling (only for non-SQLite databases)
+engine_kwargs = {
+    "connect_args": connect_args,
+    "pool_pre_ping": True,  # Verify connections before using
+}
+if "sqlite" not in DATABASE_URL:
+    # Only set pool_recycle for non-SQLite databases (PostgreSQL, etc.)
+    engine_kwargs["pool_recycle"] = 3600  # Recycle connections after 1 hour
+
+engine = create_engine(DATABASE_URL, **engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
