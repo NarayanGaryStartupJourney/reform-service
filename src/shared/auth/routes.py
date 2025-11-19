@@ -59,12 +59,15 @@ async def signup(request: SignupRequest, db: Session = Depends(get_db)):
     # Create new user
     user_id = generate_user_id()
     password_hash = hash_password(request.password)
+    
+    # Combine first_name and last_name into full_name for database storage
+    full_name = f"{request.first_name.strip()} {request.last_name.strip()}".strip()
 
     new_user = User(
         id=user_id,
         email=request.email,
         password_hash=password_hash,
-        full_name=request.full_name,
+        full_name=full_name,
         is_verified=False,  # Email verification to be implemented later
         created_at=datetime.utcnow(),
         tokens_remaining=10,  # New users start with 10 tokens
@@ -83,7 +86,7 @@ async def signup(request: SignupRequest, db: Session = Depends(get_db)):
         token_type="bearer",
         user_id=user_id,
         email=request.email,
-        full_name=request.full_name
+        full_name=full_name
     )
 
 

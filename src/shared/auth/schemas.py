@@ -8,7 +8,8 @@ class SignupRequest(BaseModel):
     """Signup request schema."""
     email: EmailStr
     password: str
-    full_name: str
+    first_name: str
+    last_name: str
 
 
 class LoginRequest(BaseModel):
