@@ -38,8 +38,8 @@ async def startup_event():
         # Log error but don't crash the app
         # Database will be created on first use if needed
         import logging
-        logging.error(f"Database initialization error: {str(e)}")
-        pass
+        logging.warning(f"Database initialization warning on startup: {str(e)}")
+        # Try to continue - database operations will handle errors gracefully
 
 # Include auth routes
 app.include_router(auth_router)
