@@ -574,7 +574,9 @@ def _check_rate_limit(client_ip: str) -> None:
 async def upload_video(
     request: Request,
     video: UploadFile = File(...),
-    exercise: int = Form(...)
+    exercise: int = Form(...),
+    # Explicitly ignore Authorization header if present (upload doesn't require auth)
+    # This prevents HTTPBearer from auto-validating and opening a database session
 ):
     """Accepts video file upload and processes with pose estimation using streaming to minimize memory."""
     temp_path = None
