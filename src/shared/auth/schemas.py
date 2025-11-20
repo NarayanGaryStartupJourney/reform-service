@@ -34,6 +34,7 @@ class UserResponse(BaseModel):
     full_name: str
     username: Optional[str] = None
     is_verified: bool
+    is_pt: bool = False  # Personal Trainer attribute
     created_at: Optional[str] = None
     tokens_remaining: Optional[int] = None  # Number of tokens remaining today
 

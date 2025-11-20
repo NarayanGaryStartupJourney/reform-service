@@ -21,6 +21,7 @@ from src.exercise_1.calculation.calculation import calculate_squat_form
 from src.shared.auth.database import init_db, get_db, reset_daily_tokens_if_needed, reset_daily_anonymous_limit_if_needed, calculate_token_cost, AnonymousAnalysis
 from src.shared.auth.routes import router as auth_router
 from src.shared.auth.dependencies import security
+from src.shared.social.routes import router as social_router
 from fastapi.security import HTTPAuthorizationCredentials
 
 RATE_LIMIT_WINDOW_SECONDS = 60
@@ -40,6 +41,10 @@ async def startup_event():
     import logging
     try:
         init_db()
+        # Also initialize social feed tables
+        from src.shared.social.database import Base as SocialBase
+        from src.shared.auth.database import engine
+        SocialBase.metadata.create_all(bind=engine, checkfirst=True)
         logging.info("Database initialization completed on startup")
     except Exception as e:
         # Log error but don't crash the app
@@ -50,6 +55,9 @@ async def startup_event():
 
 # Include auth routes
 app.include_router(auth_router)
+
+# Include social feed routes
+app.include_router(social_router)
 
 # Use /tmp/outputs on Heroku (ephemeral filesystem), otherwise use local outputs directory
 if os.environ.get("DYNO"):  # Heroku sets DYNO environment variable

@@ -16,6 +16,13 @@ def get_current_user(
     db: Session = Depends(get_db)
 ) -> User:
     """Get the current authenticated user from JWT token."""
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
     token = credentials.credentials
     payload = verify_token(token)
     

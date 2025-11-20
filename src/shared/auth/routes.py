@@ -183,6 +183,7 @@ async def get_current_user_info(
             full_name=current_user.full_name,
             username=current_user.username,
             is_verified=current_user.is_verified,
+            is_pt=current_user.is_pt,
             created_at=current_user.created_at.isoformat() if current_user.created_at else None,
             tokens_remaining=final_tokens
         )

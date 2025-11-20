@@ -1,0 +1,2 @@
+"""Social feed feature module."""
+

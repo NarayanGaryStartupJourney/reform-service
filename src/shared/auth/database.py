@@ -48,6 +48,8 @@ class User(Base):
     full_name = Column(String, nullable=False)
     username = Column(String, unique=True, index=True, nullable=True)  # Optional username field
     is_verified = Column(Boolean, default=False, nullable=False)
+    is_public = Column(Boolean, default=True, nullable=False)  # Privacy setting for social feed
+    is_pt = Column(Boolean, default=False, nullable=False)  # Personal Trainer attribute
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     last_login = Column(DateTime, nullable=True)
     # Token system: users get 10 tokens per day
