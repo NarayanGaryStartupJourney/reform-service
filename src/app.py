@@ -18,7 +18,7 @@ from src.shared.upload_video.upload_video import (
     save_video_temp
 )
 from src.exercise_1.calculation.calculation import calculate_squat_form
-from src.shared.auth.database import init_db, get_db, reset_daily_tokens_if_needed, calculate_token_cost, AnonymousAnalysis
+from src.shared.auth.database import init_db, get_db, reset_daily_tokens_if_needed, reset_daily_anonymous_limit_if_needed, calculate_token_cost, AnonymousAnalysis
 from src.shared.auth.routes import router as auth_router
 from src.shared.auth.dependencies import security
 from fastapi.security import HTTPAuthorizationCredentials
@@ -220,13 +220,22 @@ async def check_anonymous_limit(
             AnonymousAnalysis.ip_address == client_ip
         ).first()
         
+        # Reset daily limit if it's a new day
+        if anonymous_record:
+            reset_daily_anonymous_limit_if_needed(anonymous_record)
+            db.commit()
+            # Re-query to get fresh state after reset
+            anonymous_record = db.query(AnonymousAnalysis).filter(
+                AnonymousAnalysis.ip_address == client_ip
+            ).first()
+        
         if anonymous_record and anonymous_record.analysis_count >= 1:
             return {
                 "has_limit": True,
                 "limit_reached": True,
                 "analyses_completed": anonymous_record.analysis_count,
                 "limit": 1,
-                "message": "Anonymous users are limited to 1 analysis. Please sign up for unlimited analyses."
+                "message": "Anonymous users are limited to 1 analysis per day. Please sign up for unlimited analyses."
             }
         else:
             return {
@@ -234,7 +243,7 @@ async def check_anonymous_limit(
                 "limit_reached": False,
                 "analyses_completed": anonymous_record.analysis_count if anonymous_record else 0,
                 "limit": 1,
-                "message": "You have 1 free analysis remaining"
+                "message": "You have 1 free analysis remaining today"
             }
     except Exception as e:
         import logging
@@ -832,7 +841,7 @@ async def upload_video(
         
         # For logged-out users: check IP limit BEFORE upload (efficient early rejection)
         if not is_authenticated:
-            # Check if IP has already completed 1 analysis (before uploading file)
+            # Check if IP has already completed 1 analysis today (before uploading file)
             db = next(get_db())
             try:
                 # Ensure table exists (fallback if startup init failed)
@@ -843,13 +852,22 @@ async def upload_video(
                     AnonymousAnalysis.ip_address == client_ip
                 ).first()
                 
+                # Reset daily limit if it's a new day
+                if anonymous_record:
+                    reset_daily_anonymous_limit_if_needed(anonymous_record)
+                    db.commit()
+                    # Re-query to get fresh state after reset
+                    anonymous_record = db.query(AnonymousAnalysis).filter(
+                        AnonymousAnalysis.ip_address == client_ip
+                    ).first()
+                
                 if anonymous_record and anonymous_record.analysis_count >= 1:
                     db.close()
                     raise HTTPException(
                         status_code=403,
                         detail={
                             "error": "analysis_limit_reached",
-                            "message": "Anonymous users are limited to 1 analysis. Please sign up for unlimited analyses.",
+                            "message": "Anonymous users are limited to 1 analysis per day. Please sign up for unlimited analyses.",
                             "analyses_completed": anonymous_record.analysis_count,
                             "limit": 1
                         }
@@ -1023,14 +1041,16 @@ async def upload_video(
         # Use user_id (set at the start) instead of user object which may not exist here
         is_authenticated = credentials is not None and user_id is not None
         if not is_authenticated:
-            # Track anonymous analysis by IP
+            # Track anonymous analysis by IP (reset daily limit if new day before incrementing)
             db = next(get_db())
             try:
                 anonymous_record = db.query(AnonymousAnalysis).filter(
                     AnonymousAnalysis.ip_address == client_ip
                 ).first()
                 
+                # Reset daily limit if it's a new day (before incrementing)
                 if anonymous_record:
+                    reset_daily_anonymous_limit_if_needed(anonymous_record)
                     anonymous_record.analysis_count += 1
                     anonymous_record.last_analysis_at = datetime.utcnow()
                 else:

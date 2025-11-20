@@ -117,6 +117,29 @@ def reset_daily_tokens_if_needed(user: User, db) -> None:
         raise
 
 
+def reset_daily_anonymous_limit_if_needed(anonymous_record: AnonymousAnalysis) -> None:
+    """Reset anonymous analysis count to 0 if it's a new day. Does NOT commit - caller must commit."""
+    try:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        
+        if anonymous_record and anonymous_record.last_analysis_at:
+            last_analysis = anonymous_record.last_analysis_at
+            
+            # Make both timezone-aware for comparison
+            if last_analysis.tzinfo is None:
+                last_analysis = last_analysis.replace(tzinfo=timezone.utc)
+            
+            # Reset if it's a different day (new day = reset count to 0)
+            if last_analysis.date() < now.date():
+                anonymous_record.analysis_count = 0
+                # Don't commit here - let the caller commit after all changes
+    except Exception as e:
+        import logging
+        logging.error(f"Error in reset_daily_anonymous_limit_if_needed: {str(e)}")
+        # Don't raise - allow request to continue even if reset fails
+
+
 def calculate_token_cost(file_size_bytes: int) -> float:
     """
     Calculate token cost for an analysis.
