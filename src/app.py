@@ -63,7 +63,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "https://reformgym.fit",
-        "https://reform-client-c95dd550c494.herokuapp.com"
+        "https://reform-client-c95dd550c494.herokuapp.com",
+        "https://reform-client-beta-a7a168806e67.herokuapp.com"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -80,7 +81,8 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     if origin in [
         "http://localhost:3000",
         "https://reformgym.fit",
-        "https://reform-client-c95dd550c494.herokuapp.com"
+        "https://reform-client-c95dd550c494.herokuapp.com",
+        "https://reform-client-beta-a7a168806e67.herokuapp.com"
     ]:
         headers["Access-Control-Allow-Origin"] = origin
         headers["Access-Control-Allow-Credentials"] = "true"
@@ -109,7 +111,8 @@ async def starlette_http_exception_handler(request: Request, exc: StarletteHTTPE
     if origin in [
         "http://localhost:3000",
         "https://reformgym.fit",
-        "https://reform-client-c95dd550c494.herokuapp.com"
+        "https://reform-client-c95dd550c494.herokuapp.com",
+        "https://reform-client-beta-a7a168806e67.herokuapp.com"
     ]:
         headers["Access-Control-Allow-Origin"] = origin
         headers["Access-Control-Allow-Credentials"] = "true"
@@ -130,7 +133,8 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     if origin in [
         "http://localhost:3000",
         "https://reformgym.fit",
-        "https://reform-client-c95dd550c494.herokuapp.com"
+        "https://reform-client-c95dd550c494.herokuapp.com",
+        "https://reform-client-beta-a7a168806e67.herokuapp.com"
     ]:
         headers["Access-Control-Allow-Origin"] = origin
         headers["Access-Control-Allow-Credentials"] = "true"
@@ -154,7 +158,8 @@ async def general_exception_handler(request: Request, exc: Exception):
     if origin in [
         "http://localhost:3000",
         "https://reformgym.fit",
-        "https://reform-client-c95dd550c494.herokuapp.com"
+        "https://reform-client-c95dd550c494.herokuapp.com",
+        "https://reform-client-beta-a7a168806e67.herokuapp.com"
     ]:
         headers["Access-Control-Allow-Origin"] = origin
         headers["Access-Control-Allow-Credentials"] = "true"
