@@ -32,6 +32,7 @@ class UserResponse(BaseModel):
     id: str
     email: str
     full_name: str
+    username: Optional[str] = None
     is_verified: bool
     created_at: Optional[str] = None
     tokens_remaining: Optional[int] = None  # Number of tokens remaining today
@@ -41,4 +42,9 @@ class ChangePasswordRequest(BaseModel):
     """Change password request schema."""
     current_password: str
     new_password: str
+
+
+class UpdateUsernameRequest(BaseModel):
+    """Update username request schema."""
+    username: str
 

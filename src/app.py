@@ -214,6 +214,16 @@ async def check_anonymous_limit(
             "message": "No limit for authenticated users"
         }
     
+    # Skip anonymous limit check when running locally (not on Heroku)
+    if not os.environ.get("DYNO"):
+        return {
+            "has_limit": False,
+            "limit_reached": False,
+            "analyses_completed": 0,
+            "limit": 1,
+            "message": "No limit for local testing"
+        }
+    
     # Check anonymous limit
     client_ip = _get_client_ip(request)
     db = next(get_db())
@@ -738,6 +748,10 @@ async def validate_uploaded_file(temp_path: str, video: UploadFile, file_size: i
 
 def _check_rate_limit(client_ip: str) -> None:
     """Enforces simple IP-based rate limiting for uploads."""
+    # Skip rate limiting when running locally (not on Heroku)
+    if not os.environ.get("DYNO"):
+        return
+    
     now = time.time()
     with _upload_rate_limit_lock:
         request_times = _upload_rate_limit_store.setdefault(client_ip, deque())
@@ -845,7 +859,8 @@ async def upload_video(
                 db.close()
         
         # For logged-out users: check IP limit BEFORE upload (efficient early rejection)
-        if not is_authenticated:
+        # Skip anonymous limit check when running locally (not on Heroku)
+        if not is_authenticated and os.environ.get("DYNO"):
             # Check if IP has already completed 1 analysis today (before uploading file)
             db = next(get_db())
             try:
@@ -1045,7 +1060,8 @@ async def upload_video(
         # Only track anonymous analysis if user is truly not authenticated
         # Use user_id (set at the start) instead of user object which may not exist here
         is_authenticated = credentials is not None and user_id is not None
-        if not is_authenticated:
+        # Skip tracking anonymous analysis when running locally (not on Heroku)
+        if not is_authenticated and os.environ.get("DYNO"):
             # Track anonymous analysis by IP (reset daily limit if new day before incrementing)
             db = next(get_db())
             try:

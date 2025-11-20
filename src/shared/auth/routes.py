@@ -16,7 +16,8 @@ from src.shared.auth.schemas import (
     LoginRequest,
     TokenResponse,
     UserResponse,
-    ChangePasswordRequest
+    ChangePasswordRequest,
+    UpdateUsernameRequest
 )
 from src.shared.auth.dependencies import get_current_user
 
@@ -180,6 +181,7 @@ async def get_current_user_info(
             id=current_user.id,
             email=current_user.email,
             full_name=current_user.full_name,
+            username=current_user.username,
             is_verified=current_user.is_verified,
             created_at=current_user.created_at.isoformat() if current_user.created_at else None,
             tokens_remaining=final_tokens
@@ -236,6 +238,74 @@ async def change_password(
     return {"message": "Password changed successfully"}
 
 
+@router.post("/update-username", status_code=status.HTTP_200_OK)
+async def update_username(
+    request: UpdateUsernameRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update user username."""
+    import re
+    
+    # Reserved usernames that cannot be used
+    RESERVED_USERNAMES = {
+        'admin', 'administrator', 'adm', 'ad',
+        'dev', 'developer', 'devops',
+        'test', 'testing', 'tester',
+        'root', 'system', 'service',
+        'api', 'app', 'web',
+        'support', 'help', 'info',
+        'null', 'undefined', 'none'
+    }
+    
+    username = request.username.strip().lower()
+    
+    # Validation: username must be 3-30 characters, alphanumeric and underscores only
+    if len(username) < 3:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username must be at least 3 characters"
+        )
+    
+    if len(username) > 30:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username must be at most 30 characters"
+        )
+    
+    # Check if username contains only alphanumeric characters and underscores
+    if not re.match(r'^[a-z0-9_]+$', username):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username can only contain lowercase letters, numbers, and underscores"
+        )
+    
+    # Check if username is reserved
+    if username in RESERVED_USERNAMES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This username is reserved and cannot be used"
+        )
+    
+    # Check if username is already taken by another user
+    existing_user = db.query(User).filter(
+        User.username == username,
+        User.id != current_user.id
+    ).first()
+    
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already taken"
+        )
+    
+    # Update username
+    current_user.username = username
+    db.commit()
+    
+    return {"message": "Username updated successfully", "username": username}
+
+
 @router.get("/admin/users", response_model=List[UserResponse])
 async def list_all_users(db: Session = Depends(get_db)):
     """Temporary admin endpoint to list all users. Remove in production."""
@@ -245,6 +315,7 @@ async def list_all_users(db: Session = Depends(get_db)):
             id=user.id,
             email=user.email,
             full_name=user.full_name,
+            username=user.username,
             is_verified=user.is_verified,
             created_at=user.created_at.isoformat() if user.created_at else None
         )
