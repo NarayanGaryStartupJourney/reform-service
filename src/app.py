@@ -24,6 +24,7 @@ from src.shared.auth.routes import router as auth_router
 from src.shared.auth.dependencies import security
 from src.shared.social.routes import router as social_router
 from src.shared.payment.routes import router as payment_router
+from src.shared.contact.routes import router as contact_router
 from fastapi.security import HTTPAuthorizationCredentials
 
 RATE_LIMIT_WINDOW_SECONDS = 60
@@ -63,6 +64,9 @@ app.include_router(social_router)
 
 # Include payment/token routes
 app.include_router(payment_router)
+
+# Include contact routes
+app.include_router(contact_router)
 
 # Use /tmp/outputs on Heroku (ephemeral filesystem), otherwise use local outputs directory
 if os.environ.get("DYNO"):  # Heroku sets DYNO environment variable
