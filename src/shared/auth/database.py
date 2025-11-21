@@ -50,11 +50,18 @@ class User(Base):
     is_verified = Column(Boolean, default=False, nullable=False)
     is_public = Column(Boolean, default=True, nullable=False)  # Privacy setting for social feed
     is_pt = Column(Boolean, default=False, nullable=False)  # Personal Trainer attribute
+    technical_level = Column(String, nullable=True)  # beginner, novice, intermediate, advanced, elite
+    favorite_exercise = Column(String, nullable=True)  # Favorite exercise (dropdown selection later)
+    community_preference = Column(String, nullable=True)  # share_to_similar_levels, share_to_pt, compete_with_someone
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     last_login = Column(DateTime, nullable=True)
     # Token system: users get 10 tokens per day
     tokens_remaining = Column(Integer, default=10, nullable=False)
     last_token_reset = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # Payment-related columns (prepared for future Stripe integration)
+    stripe_customer_id = Column(String, unique=True, nullable=True)  # Stripe customer ID (for future use)
+    subscription_status = Column(String, nullable=True)  # 'none', 'active', 'canceled', 'past_due' (for future use)
+    subscription_tier = Column(String, nullable=True)  # e.g., 'basic', 'pro' (for future use)
 
 
 class AnonymousAnalysis(Base):

@@ -17,7 +17,8 @@ from src.shared.auth.schemas import (
     TokenResponse,
     UserResponse,
     ChangePasswordRequest,
-    UpdateUsernameRequest
+    UpdateUsernameRequest,
+    UpdateProfileRequest
 )
 from src.shared.auth.dependencies import get_current_user
 
@@ -112,35 +113,57 @@ async def signup(request: SignupRequest, db: Session = Depends(get_db)):
 @router.post("/login", response_model=TokenResponse)
 async def login(request: LoginRequest, db: Session = Depends(get_db)):
     """Authenticate user and return access token."""
-    # Find user by email
-    user = db.query(User).filter(User.email == request.email).first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password"
+    import logging
+    
+    try:
+        # Find user by email
+        user = db.query(User).filter(User.email == request.email).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
+            )
+        
+        # Verify password
+        if not verify_password(request.password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
+            )
+        
+        # Update last login
+        user.last_login = datetime.utcnow()
+        db.commit()
+        
+        # Create access token
+        try:
+            access_token = create_access_token(data={"sub": user.id, "email": user.email})
+        except ValueError as e:
+            # SECRET_KEY is missing or invalid
+            logging.error(f"Failed to create access token: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Server configuration error. Please contact support."
+            )
+        
+        return TokenResponse(
+            access_token=access_token,
+            token_type="bearer",
+            user_id=user.id,
+            email=user.email,
+            full_name=user.full_name
         )
-    
-    # Verify password
-    if not verify_password(request.password, user.password_hash):
+    except HTTPException:
+        # Re-raise HTTP exceptions (authentication failures, etc.)
+        raise
+    except Exception as e:
+        # Log unexpected errors for debugging
+        logging.error(f"Login error: {str(e)}", exc_info=True)
+        db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Login failed. Please try again later."
         )
-    
-    # Update last login
-    user.last_login = datetime.utcnow()
-    db.commit()
-    
-    # Create access token
-    access_token = create_access_token(data={"sub": user.id, "email": user.email})
-    
-    return TokenResponse(
-        access_token=access_token,
-        token_type="bearer",
-        user_id=user.id,
-        email=user.email,
-        full_name=user.full_name
-    )
 
 
 @router.get("/me", response_model=UserResponse)
@@ -184,6 +207,9 @@ async def get_current_user_info(
             username=current_user.username,
             is_verified=current_user.is_verified,
             is_pt=current_user.is_pt,
+            technical_level=getattr(current_user, 'technical_level', None),
+            favorite_exercise=getattr(current_user, 'favorite_exercise', None),
+            community_preference=getattr(current_user, 'community_preference', None),
             created_at=current_user.created_at.isoformat() if current_user.created_at else None,
             tokens_remaining=final_tokens
         )
@@ -307,6 +333,47 @@ async def update_username(
     return {"message": "Username updated successfully", "username": username}
 
 
+@router.post("/update-profile", status_code=status.HTTP_200_OK)
+async def update_profile(
+    request: UpdateProfileRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update user profile attributes (technical level, favorite exercise, community preference)."""
+    # Validate technical_level if provided
+    if request.technical_level is not None:
+        valid_levels = ['beginner', 'novice', 'intermediate', 'advanced', 'elite']
+        if request.technical_level not in valid_levels:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid technical level. Must be one of: {', '.join(valid_levels)}"
+            )
+        current_user.technical_level = request.technical_level
+    
+    # Validate community_preference if provided
+    if request.community_preference is not None:
+        valid_preferences = ['share_to_similar_levels', 'share_to_pt', 'compete_with_someone']
+        if request.community_preference not in valid_preferences:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid community preference. Must be one of: {', '.join(valid_preferences)}"
+            )
+        current_user.community_preference = request.community_preference
+    
+    # Update favorite_exercise if provided (no validation yet, will add dropdown later)
+    if request.favorite_exercise is not None:
+        current_user.favorite_exercise = request.favorite_exercise.strip() if request.favorite_exercise else None
+    
+    db.commit()
+    
+    return {
+        "message": "Profile updated successfully",
+        "technical_level": current_user.technical_level,
+        "favorite_exercise": current_user.favorite_exercise,
+        "community_preference": current_user.community_preference
+    }
+
+
 @router.get("/admin/users", response_model=List[UserResponse])
 async def list_all_users(db: Session = Depends(get_db)):
     """Temporary admin endpoint to list all users. Remove in production."""
@@ -318,6 +385,10 @@ async def list_all_users(db: Session = Depends(get_db)):
             full_name=user.full_name,
             username=user.username,
             is_verified=user.is_verified,
+            is_pt=getattr(user, 'is_pt', False),
+            technical_level=getattr(user, 'technical_level', None),
+            favorite_exercise=getattr(user, 'favorite_exercise', None),
+            community_preference=getattr(user, 'community_preference', None),
             created_at=user.created_at.isoformat() if user.created_at else None
         )
         for user in users

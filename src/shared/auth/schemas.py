@@ -35,6 +35,9 @@ class UserResponse(BaseModel):
     username: Optional[str] = None
     is_verified: bool
     is_pt: bool = False  # Personal Trainer attribute
+    technical_level: Optional[str] = None  # beginner, novice, intermediate, advanced, elite
+    favorite_exercise: Optional[str] = None  # Favorite exercise
+    community_preference: Optional[str] = None  # share_to_similar_levels, share_to_pt, compete_with_someone
     created_at: Optional[str] = None
     tokens_remaining: Optional[int] = None  # Number of tokens remaining today
 
@@ -48,4 +51,11 @@ class ChangePasswordRequest(BaseModel):
 class UpdateUsernameRequest(BaseModel):
     """Update username request schema."""
     username: str
+
+
+class UpdateProfileRequest(BaseModel):
+    """Update user profile attributes request schema."""
+    technical_level: Optional[str] = None  # beginner, novice, intermediate, advanced, elite
+    favorite_exercise: Optional[str] = None
+    community_preference: Optional[str] = None  # share_to_similar_levels, share_to_pt, compete_with_someone
 

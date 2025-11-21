@@ -38,6 +38,7 @@ class PostResponse(BaseModel):
     like_count: int = 0
     comment_count: int = 0
     is_liked: bool = False  # Whether current user has liked this post
+    is_following: Optional[bool] = None  # Whether current user is following the post author (optional, not always included)
 
     class Config:
         from_attributes = True
@@ -106,4 +107,22 @@ class FeedResponse(BaseModel):
     limit: int
     offset: int
     has_more: bool
+
+
+class FollowerInfo(BaseModel):
+    """Schema for follower/following user information."""
+    id: str
+    user_id: Optional[str] = None  # For backward compatibility
+    username: Optional[str] = None
+    full_name: str
+    is_following_back: bool = False  # Whether current user is following this follower back
+
+    class Config:
+        from_attributes = True
+
+
+class FollowersResponse(BaseModel):
+    """Schema for followers list response."""
+    followers: List[FollowerInfo]
+    total: int
 
