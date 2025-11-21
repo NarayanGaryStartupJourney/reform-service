@@ -285,7 +285,16 @@ def create_visualization_streaming(video_path: str, landmarks_list: list, output
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
+    # Calculate padded dimensions (divisible by 16 to avoid imageio-ffmpeg resizing warning)
+    MACRO_BLOCK_SIZE = 16
+    padded_width = ((width + MACRO_BLOCK_SIZE - 1) // MACRO_BLOCK_SIZE) * MACRO_BLOCK_SIZE
+    padded_height = ((height + MACRO_BLOCK_SIZE - 1) // MACRO_BLOCK_SIZE) * MACRO_BLOCK_SIZE
+    
+    # Only pad if dimensions need adjustment
+    needs_padding = (padded_width != width) or (padded_height != height)
+    
     # Create video writer using imageio-ffmpeg (H.264 codec, browser-compatible)
+    # Frames will be padded to dimensions divisible by 16 before writing
     try:
         writer = imageio.get_writer(
             output_path,
@@ -329,6 +338,19 @@ def create_visualization_streaming(video_path: str, landmarks_list: list, output
                             lm = landmarks.landmark[idx]
                             x, y = int(lm.x * w), int(lm.y * h)
                             cv2.circle(annotated, (x, y), 5, colors.get(idx, (0, 255, 0)), -1)
+                
+                # Pad frame to be divisible by 16 if needed
+                if needs_padding:
+                    # Add black padding to right and bottom edges
+                    annotated = cv2.copyMakeBorder(
+                        annotated,
+                        0,  # top
+                        padded_height - height,  # bottom
+                        0,  # left
+                        padded_width - width,  # right
+                        cv2.BORDER_CONSTANT,
+                        value=[0, 0, 0]  # black padding
+                    )
                 
                 rgb_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
                 

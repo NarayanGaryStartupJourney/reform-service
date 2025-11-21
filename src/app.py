@@ -17,7 +17,8 @@ from src.shared.upload_video.upload_video import (
     accept_video_file,
     save_video_temp
 )
-from src.exercise_1.calculation.calculation import calculate_squat_form
+# Import exercise registry - this will auto-register exercises
+from src.shared.exercises import get_exercise, EXERCISES
 from src.shared.auth.database import init_db, get_db, reset_daily_tokens_if_needed, reset_daily_anonymous_limit_if_needed, calculate_token_cost, AnonymousAnalysis
 from src.shared.auth.routes import router as auth_router
 from src.shared.auth.dependencies import security
@@ -315,23 +316,19 @@ def get_required_landmarks(exercise: int) -> list:
     Usable by both upload and livestream.
     Returns list of required landmark indices or None if not applicable.
     """
-    if exercise == 1:
-        from src.exercise_1.calculation.landmark_validation import get_squat_required_landmarks
-        return get_squat_required_landmarks()
-    elif exercise == 2:
-        # TODO: Add bench required landmarks when implemented
-        return None
-    elif exercise == 3:
-        # TODO: Add deadlift required landmarks when implemented
-        return None
-    else:
-        return None
+    from src.shared.exercises import get_exercise
+    exercise_module = get_exercise(exercise)
+    if exercise_module:
+        return exercise_module.get_required_landmarks()
+    return None
 
 
 def route_to_exercise_calculation(exercise: int, landmarks_list: list, validation_result: dict = None) -> dict:
     """Routes to appropriate exercise calculation module."""
-    if exercise == 1:
-        return calculate_squat_form(landmarks_list, validation_result)
+    from src.shared.exercises import get_exercise
+    exercise_module = get_exercise(exercise)
+    if exercise_module:
+        return exercise_module.calculate_form(landmarks_list, validation_result)
     elif exercise == 2:
         return {"exercise": 2, "message": "Exercise 2 not implemented"}
     elif exercise == 3:
@@ -380,18 +377,22 @@ async def _validate_file(video: UploadFile, file_size: int = None) -> tuple:
     return file_info, file_size
 
 
-def check_camera_angle(landmarks_list: list) -> dict:
+def check_camera_angle(landmarks_list: list, exercise: int = 1) -> dict:
     """
     General camera angle checker - returns camera angle info without raising exceptions.
     Usable by both upload and livestream. Check 'should_reject' flag to handle rejection.
     """
-    from src.exercise_1.calculation.calculation import detect_camera_angle
-    return detect_camera_angle(landmarks_list)
+    from src.shared.exercises import get_exercise
+    exercise_module = get_exercise(exercise)
+    if exercise_module and exercise_module.get_camera_angle_detector():
+        return exercise_module.get_camera_angle_detector()(landmarks_list)
+    # Fallback for exercises without camera angle detection
+    return {"should_reject": False, "angle_estimate": None, "message": "Camera angle detection not available"}
 
 
-def _check_camera_angle(landmarks_list: list) -> dict:
+def _check_camera_angle(landmarks_list: list, exercise: int = 1) -> dict:
     """Upload-specific wrapper - checks camera angle and raises HTTPException if too extreme. Maintains backward compatibility."""
-    camera_angle_info = check_camera_angle(landmarks_list)
+    camera_angle_info = check_camera_angle(landmarks_list, exercise)
     if camera_angle_info.get("should_reject", False):
         raise HTTPException(
             status_code=400,
@@ -405,22 +406,26 @@ def _check_camera_angle(landmarks_list: list) -> dict:
     return camera_angle_info
 
 
-def _extract_active_angles(angles: list, squat_phases: dict) -> list:
-    """Extracts angles only from active squat phases."""
-    if not squat_phases.get("reps"):
+def _extract_active_angles(angles: list, phases: dict) -> list:
+    """Extracts angles only from active exercise phases (e.g., squat phases, bench reps, etc.)."""
+    if not phases or not phases.get("reps"):
         return angles
     active_angles = []
-    for rep in squat_phases["reps"]:
+    for rep in phases["reps"]:
         active_angles.extend([angles[i] if i < len(angles) else None
                              for i in range(rep["start_frame"], rep["end_frame"] + 1)])
     return active_angles
 
 
 def _perform_angle_analyses(calculation_results: dict, quad_angles: list, ankle_angles: list,
-                           squat_phases: dict, torso_asymmetry: list, quad_asymmetry: list,
+                           phases: dict, torso_asymmetry: list, quad_asymmetry: list,
                            ankle_asymmetry: list, fps: float, camera_angle_info: dict = None,
                            landmarks_list: list = None, validation_result: dict = None) -> dict:
-    """Performs all angle analyses and returns form_analysis dict."""
+    """
+    Performs all angle analyses and returns form_analysis dict.
+    NOTE: This function is kept for backward compatibility but is now deprecated.
+    New exercises should use the ExerciseBase.analyze_form() method instead.
+    """
     from src.exercise_1.llm_form_analysis.llm_form_analysis import (
         analyze_torso_angle, analyze_quad_angle, analyze_ankle_angle, analyze_asymmetry,
         analyze_rep_consistency, analyze_glute_dominance, analyze_knee_valgus, _is_front_view
@@ -435,14 +440,14 @@ def _perform_angle_analyses(calculation_results: dict, quad_angles: list, ankle_
     ankle_asymmetry_analysis = analyze_asymmetry(ankle_asymmetry, "ankle")
     asymmetry_data = calculation_results.get("asymmetry_per_frame", {})
     rep_consistency = analyze_rep_consistency(
-        calculation_results["angles_per_frame"], asymmetry_data, squat_phases.get("reps", [])
-    ) if squat_phases and squat_phases.get("reps") else None
+        calculation_results["angles_per_frame"], asymmetry_data, phases.get("reps", [])
+    ) if phases and phases.get("reps") else None
     glute_dominance = analyze_glute_dominance(
-        quad_angles_raw, torso_angles_raw, squat_phases.get("reps", []), fps
-    ) if squat_phases and squat_phases.get("reps") else None
+        quad_angles_raw, torso_angles_raw, phases.get("reps", []), fps
+    ) if phases and phases.get("reps") else None
     knee_valgus = None
-    if _is_front_view(camera_angle_info) and landmarks_list and squat_phases and squat_phases.get("reps"):
-        knee_valgus = analyze_knee_valgus(landmarks_list, squat_phases.get("reps", []))
+    if _is_front_view(camera_angle_info) and landmarks_list and phases and phases.get("reps"):
+        knee_valgus = analyze_knee_valgus(landmarks_list, phases.get("reps", []))
     result = {
         "torso_angle": torso_analysis, "quad_angle": quad_analysis, "ankle_angle": ankle_analysis,
         "torso_asymmetry": torso_asymmetry_analysis, "quad_asymmetry": quad_asymmetry_analysis,
@@ -459,54 +464,65 @@ def _perform_angle_analyses(calculation_results: dict, quad_angles: list, ankle_
     return result
 
 
-def _extract_all_active_data(calculation_results: dict, squat_phases: dict) -> tuple:
-    """Extracts all active angles and asymmetry data from squat phases."""
+def _extract_all_active_data(calculation_results: dict, phases: dict) -> tuple:
+    """
+    Extracts all active angles and asymmetry data from exercise phases.
+    NOTE: This function is kept for backward compatibility but is now deprecated.
+    New exercises should use ExerciseBase.extract_active_data() method instead.
+    """
     quad_angles_raw = calculation_results["angles_per_frame"].get("quad_angle", [])
-    quad_angles = _extract_active_angles(quad_angles_raw, squat_phases)
+    quad_angles = _extract_active_angles(quad_angles_raw, phases)
     ankle_angles = _extract_active_angles(
-        calculation_results["angles_per_frame"].get("ankle_angle", []), squat_phases
+        calculation_results["angles_per_frame"].get("ankle_angle", []), phases
     )
     asymmetry_data = calculation_results.get("asymmetry_per_frame", {})
-    torso_asymmetry = _extract_active_angles(asymmetry_data.get("torso_asymmetry", []), squat_phases)
-    quad_asymmetry = _extract_active_angles(asymmetry_data.get("quad_asymmetry", []), squat_phases)
-    ankle_asymmetry = _extract_active_angles(asymmetry_data.get("ankle_asymmetry", []), squat_phases)
+    torso_asymmetry = _extract_active_angles(asymmetry_data.get("torso_asymmetry", []), phases)
+    quad_asymmetry = _extract_active_angles(asymmetry_data.get("quad_asymmetry", []), phases)
+    ankle_asymmetry = _extract_active_angles(asymmetry_data.get("ankle_asymmetry", []), phases)
     return quad_angles, ankle_angles, torso_asymmetry, quad_asymmetry, ankle_asymmetry
 
 
 def _analyze_exercise_form(exercise: int, calculation_results: dict, fps: float,
                           camera_angle_info: dict = None, landmarks_list: list = None, validation_result: dict = None) -> tuple:
-    """Analyzes exercise form and returns form_analysis and squat_phases."""
+    """
+    Analyzes exercise form and returns form_analysis and phases (e.g., squat_phases).
+    Uses the exercise registry to route to the appropriate exercise implementation.
+    """
+    from src.shared.exercises import get_exercise
+    exercise_module = get_exercise(exercise)
+    
     form_analysis = None
-    squat_phases = None
-    if exercise == 1 and calculation_results.get("angles_per_frame"):
-        from src.exercise_1.llm_form_analysis.llm_form_analysis import detect_squat_phases
-        quad_angles_raw = calculation_results["angles_per_frame"].get("quad_angle", [])
-        squat_phases = detect_squat_phases(quad_angles_raw, fps)
-        quad_angles, ankle_angles, torso_asymmetry, quad_asymmetry, ankle_asymmetry = _extract_all_active_data(
-            calculation_results, squat_phases
+    phases = None
+    
+    if exercise_module and calculation_results.get("angles_per_frame"):
+        # Detect phases (reps, etc.)
+        phases = exercise_module.detect_phases(calculation_results, fps)
+        
+        # Perform form analysis
+        form_analysis = exercise_module.analyze_form(
+            calculation_results, phases, fps, camera_angle_info, landmarks_list, validation_result
         )
-        form_analysis = _perform_angle_analyses(
-            calculation_results, quad_angles, ankle_angles, squat_phases,
-            torso_asymmetry, quad_asymmetry, ankle_asymmetry, fps, camera_angle_info, landmarks_list, validation_result
-        )
-    return form_analysis, squat_phases
+    
+    return form_analysis, phases
 
 
 def process_analysis_pipeline(exercise: int, frames: list = None, fps: float = 30.0, landmarks_list: list = None, validation_result: dict = None) -> tuple:
     """Core analysis pipeline - processes frames and returns analysis results. General function usable by both upload and livestream.
     Note: frames parameter is kept for backward compatibility but is not actually used - only landmarks_list is needed.
+    Returns: (calculation_results, camera_angle_info, form_analysis, phases)
+    Note: phases is returned as squat_phases in response for backward compatibility.
     """
-    camera_angle_info = check_camera_angle(landmarks_list)
+    camera_angle_info = check_camera_angle(landmarks_list, exercise)
     calculation_results = route_to_exercise_calculation(exercise, landmarks_list, validation_result)
-    form_analysis, squat_phases = _analyze_exercise_form(
+    form_analysis, phases = _analyze_exercise_form(
         exercise, calculation_results, fps, camera_angle_info, landmarks_list, validation_result
     )
-    return calculation_results, camera_angle_info, form_analysis, squat_phases
+    return calculation_results, camera_angle_info, form_analysis, phases
 
 
 def _process_video_analysis(video: UploadFile, exercise: int, frames: list, fps: float, landmarks_list: list, validation_result: dict = None) -> tuple:
     """Upload-specific wrapper for process_analysis_pipeline. Handles camera angle rejection for upload. Maintains backward compatibility."""
-    calc_results, cam_info, form_analysis, squat_phases = process_analysis_pipeline(exercise, frames, fps, landmarks_list, validation_result)
+    calc_results, cam_info, form_analysis, phases = process_analysis_pipeline(exercise, frames, fps, landmarks_list, validation_result)
     if cam_info.get("should_reject", False):
         raise HTTPException(
             status_code=400,
@@ -517,32 +533,38 @@ def _process_video_analysis(video: UploadFile, exercise: int, frames: list, fps:
                 "recommendation": "Please record again with the person standing perpendicular to the camera for accurate measurements."
             }
         )
-    return calc_results, cam_info, form_analysis, squat_phases
+    return calc_results, cam_info, form_analysis, phases
 
 
 def build_analysis_response(exercise: int, frame_count: int, calculation_results: dict, camera_angle_info: dict,
-                            form_analysis: dict, squat_phases: dict) -> dict:
-    """Builds general analysis response dictionary. Usable by both upload and livestream."""
-    exercise_names = {1: "Squat", 2: "Bench", 3: "Deadlift"}
+                            form_analysis: dict, phases: dict) -> dict:
+    """
+    Builds general analysis response dictionary. Usable by both upload and livestream.
+    Note: phases is stored as 'squat_phases' in response for backward compatibility.
+    """
+    from src.shared.exercises import get_exercise
+    exercise_module = get_exercise(exercise)
+    exercise_name = exercise_module.exercise_name if exercise_module else {1: "Squat", 2: "Bench", 3: "Deadlift"}.get(exercise, "Unknown")
+    
     return {
         "status": "success",
         "exercise": exercise,
-        "exercise_name": exercise_names[exercise],
+        "exercise_name": exercise_name,
         "frame_count": frame_count,
         "calculation_results": calculation_results,
         "camera_angle_info": camera_angle_info,
         "form_analysis": form_analysis,
-        "squat_phases": squat_phases,
+        "squat_phases": phases,  # Keep 'squat_phases' key for backward compatibility
         "validated": True
     }
 
 
 def _build_response(exercise: int, file_info: dict, file_size: int, frame_count: int, output_path: Path,
                    output_filename: str, calculation_results: dict, camera_angle_info: dict,
-                   form_analysis: dict, squat_phases: dict, visualization_url: str = None) -> dict:
+                   form_analysis: dict, phases: dict, visualization_url: str = None) -> dict:
     """Upload-specific response builder. Adds upload metadata to general analysis response."""
     analysis_response = build_analysis_response(
-        exercise, frame_count, calculation_results, camera_angle_info, form_analysis, squat_phases
+        exercise, frame_count, calculation_results, camera_angle_info, form_analysis, phases
     )
     if visualization_url is None:
         # visualization_url should always be provided by the caller
@@ -1034,7 +1056,7 @@ async def upload_video(
                 "message": duration_validation.get("errors", ["Video duration validation failed"])[0]
             })
         
-        calc_results, cam_info, form_analysis, squat_phases = _process_video_analysis(
+        calc_results, cam_info, form_analysis, phases = _process_video_analysis(
             video, exercise, None, fps, landmarks_list, validation_result
         )
         
@@ -1164,7 +1186,7 @@ async def upload_video(
                 db.close()
         
         response = _build_response(exercise, file_info, file_size, frame_count, Path(output_path),
-                                  output_filename, calc_results, cam_info, form_analysis, squat_phases, visualization_url)
+                                  output_filename, calc_results, cam_info, form_analysis, phases, visualization_url)
         
         # Add token information to response if user is logged in
         if is_authenticated:
