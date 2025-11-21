@@ -296,6 +296,13 @@ async def toggle_like(
     db: Session = Depends(get_db)
 ):
     """Toggle like on a post."""
+    # Check if user has username set
+    if not current_user.username:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username is required to like posts. Please set a username in your profile."
+        )
+    
     # Check if post exists and user can see it
     post = db.query(Post).filter(Post.id == post_id).first()
     if not post:
@@ -430,6 +437,13 @@ async def create_comment(
     db: Session = Depends(get_db)
 ):
     """Create a comment on a post."""
+    # Check if user has username set
+    if not current_user.username:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username is required to comment on posts. Please set a username in your profile."
+        )
+    
     # Check if post exists and user can see it
     post = db.query(Post).filter(Post.id == post_id).first()
     if not post:
@@ -508,6 +522,31 @@ async def delete_comment(
     comment.updated_at = datetime.utcnow()
     db.commit()
     return None
+
+
+@router.get("/users/{username}/follow", response_model=dict)
+async def get_follow_status(
+    username: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get follow status for a user."""
+    target_user = get_user_by_username(db, username)
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Check if already following
+    existing_follow = db.query(Follow).filter(
+        and_(
+            Follow.follower_id == current_user.id,
+            Follow.following_id == target_user.id
+        )
+    ).first()
+    
+    return {"following": existing_follow is not None}
 
 
 @router.post("/users/{username}/follow", response_model=dict)
