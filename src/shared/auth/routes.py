@@ -132,8 +132,12 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
                 detail="Invalid email or password"
             )
         
-        # Update last login
-        user.last_login = datetime.utcnow()
+        # Update last login (if column exists)
+        try:
+            user.last_login = datetime.utcnow()
+        except AttributeError:
+            # Column doesn't exist yet - skip update
+            pass
         db.commit()
         
         # Create access token

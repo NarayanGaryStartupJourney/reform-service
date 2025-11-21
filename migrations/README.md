@@ -12,6 +12,7 @@ Run migrations in this order if setting up a new database or updating an existin
 4. **migrate_add_is_pt.py** - Adds `is_pt` column to `users` table for Personal Trainer attribute
 5. **migrate_add_user_profile_attributes.py** - Adds `technical_level`, `favorite_exercise`, `community_preference` to `users` table
 6. **migrate_add_payment_tables.py** - Creates `token_transactions`, `subscriptions`, `payments` tables and adds payment-related columns to `users` table
+7. **migrate_add_token_activation_date.py** - Adds `token_activation_date` column to `users` table
 
 ## Usage
 
