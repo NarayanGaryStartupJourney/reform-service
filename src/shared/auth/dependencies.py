@@ -1,6 +1,6 @@
 """Authentication dependencies for protected routes."""
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from src.shared.auth.database import get_db, User
@@ -12,24 +12,37 @@ security = HTTPBearer(auto_error=False)
 
 
 def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ) -> User:
-    """Get the current authenticated user from JWT token."""
-    if credentials is None:
+    """
+    Get the current authenticated user from JWT token.
+    Supports both httpOnly cookies and Authorization header (for backward compatibility).
+    """
+    token = None
+    
+    # First, try to get token from httpOnly cookie (preferred method)
+    if "access_token" in request.cookies:
+        token = request.cookies.get("access_token")
+    # Fallback to Authorization header for backward compatibility
+    elif credentials is not None:
+        token = credentials.credentials
+    
+    if token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    token = credentials.credentials
-    payload = verify_token(token)
+    # Verify token and ensure it's an access token (not refresh token)
+    payload = verify_token(token, token_type="access")
     
     if payload is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
+            detail="Invalid or expired access token. Please refresh your token.",
             headers={"WWW-Authenticate": "Bearer"},
         )
     

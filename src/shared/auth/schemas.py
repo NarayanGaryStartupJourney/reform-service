@@ -20,7 +20,7 @@ class LoginRequest(BaseModel):
 
 class TokenResponse(BaseModel):
     """Token response schema."""
-    access_token: str
+    access_token: Optional[str] = None  # Optional - now sent via httpOnly cookie
     token_type: str = "bearer"
     user_id: str
     email: str

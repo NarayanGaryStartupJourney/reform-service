@@ -105,20 +105,25 @@ def init_db():
         # Use checkfirst=True to avoid errors if tables already exist
         Base.metadata.create_all(bind=engine, checkfirst=True)
         logging.info("Database tables initialized successfully")
-    except (IntegrityError, ProgrammingError) as e:
-        # Ignore duplicate type/constraint errors - these happen when types already exist
-        # This is safe because checkfirst=True should prevent duplicate table creation
-        error_str = str(e)
-        if "pg_type_typname_nsp_index" in error_str or "duplicate key" in error_str.lower():
-            logging.info("Database types already exist, skipping type creation (safe to ignore)")
-        else:
-            logging.warning(f"Database integrity/programming error (may be safe to ignore): {error_str}")
     except Exception as e:
-        # Log error - this is important for debugging
+        # Check if this is a duplicate type/constraint error (safe to ignore)
         error_str = str(e)
-        if "pg_type_typname_nsp_index" in error_str or "duplicate key" in error_str.lower():
-            logging.info("Database types already exist, skipping type creation (safe to ignore)")
+        error_repr = repr(e)
+        
+        # Check for duplicate type errors in various forms
+        is_duplicate_type_error = (
+            "pg_type_typname_nsp_index" in error_str or
+            "pg_type_typname_nsp_index" in error_repr or
+            "duplicate key value violates unique constraint" in error_str.lower() or
+            "UniqueViolation" in error_str or
+            "UniqueViolation" in error_repr
+        )
+        
+        if is_duplicate_type_error:
+            # This is safe to ignore - types/tables already exist
+            logging.info("Database types/tables already exist, skipping creation (safe to ignore)")
         else:
+            # Log other errors for debugging
             logging.error(f"Database initialization error: {error_str}")
         # Don't raise - let the fallback in routes handle it
         # This allows the app to start even if DB init fails

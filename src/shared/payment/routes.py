@@ -139,20 +139,27 @@ async def get_token_balance(
             )
         ).scalar() or 0
         
+        # Debits can have source='analysis_usage' but meta_data['deducted_from']=source
+        # Match debits that were deducted from this source (same logic as monthly_allotment)
         debits = db.query(func.coalesce(func.sum(func.abs(TokenTransaction.amount)), 0)).filter(
             and_(
                 TokenTransaction.user_id == current_user.id,
                 TokenTransaction.token_type == 'free',
-                TokenTransaction.source == source,
-                TokenTransaction.amount < 0
+                TokenTransaction.amount < 0,
+                or_(
+                    TokenTransaction.source == source,
+                    TokenTransaction.meta_data['deducted_from'].astext == source
+                )
             )
         ).scalar() or 0
         
         other_free_credits += credits
         other_free_debits += debits
     
-    # Also get any free tokens with unknown/other sources (not monthly_allotment)
+    # Also get any free tokens with unknown/other sources (not monthly_allotment or other_free_sources)
+    # Exclude debit-only sources like 'analysis_usage' from unknown credits/debits calculation
     known_sources = ['monthly_allotment'] + other_free_sources
+    debit_only_sources = ['analysis_usage']  # Sources that only have debits, not credits
     unknown_free_credits = db.query(func.coalesce(func.sum(TokenTransaction.amount), 0)).filter(
         and_(
             TokenTransaction.user_id == current_user.id,
@@ -166,12 +173,15 @@ async def get_token_balance(
         )
     ).scalar() or 0
     
+    # Only count debits from unknown sources that are NOT debit-only sources
+    # (debit-only sources like 'analysis_usage' should not affect the breakdown)
     unknown_free_debits = db.query(func.coalesce(func.sum(func.abs(TokenTransaction.amount)), 0)).filter(
         and_(
             TokenTransaction.user_id == current_user.id,
             TokenTransaction.token_type == 'free',
             TokenTransaction.amount < 0,
-            ~TokenTransaction.source.in_(known_sources)
+            ~TokenTransaction.source.in_(known_sources),
+            ~TokenTransaction.source.in_(debit_only_sources)
         )
     ).scalar() or 0
     
