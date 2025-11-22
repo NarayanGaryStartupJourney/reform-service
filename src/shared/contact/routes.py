@@ -5,6 +5,7 @@ import smtplib
 import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from html import escape
 from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import APIRouter, HTTPException, status, Depends, Request
@@ -133,15 +134,14 @@ def send_email(name: str, email: str, subject: str, message: str) -> bool:
             return False
         
         # Create message
-        msg = MIMEMultipart()
+        msg = MIMEMultipart('alternative')
         msg['From'] = smtp_user
         msg['To'] = support_email
         msg['Reply-To'] = email  # Allow support to reply directly to user
         msg['Subject'] = f"Contact Form: {subject}"
         
-        # Create email body
-        body = f"""
-New contact form submission from ReformGym website:
+        # Create plain text version
+        plain_body = f"""New contact form submission from ReformGym website:
 
 Name: {name}
 Email: {email}
@@ -155,7 +155,34 @@ This message was sent from the ReformGym contact form.
 Reply directly to this email to respond to {name} ({email}).
 """
         
-        msg.attach(MIMEText(body, 'plain'))
+        # Create HTML version for better display
+        html_body = f"""<html>
+  <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+    <h2 style="color: #2c3e50;">New Contact Form Submission</h2>
+    <p>You have received a new message from the ReformGym website contact form.</p>
+    
+    <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+      <p style="margin: 5px 0;"><strong>Name:</strong> {escape(name)}</p>
+      <p style="margin: 5px 0;"><strong>Email:</strong> <a href="mailto:{escape(email)}">{escape(email)}</a></p>
+      <p style="margin: 5px 0;"><strong>Subject:</strong> {escape(subject)}</p>
+    </div>
+    
+    <div style="margin: 20px 0;">
+      <h3 style="color: #2c3e50;">Message:</h3>
+      <div style="background-color: #ffffff; padding: 15px; border-left: 4px solid #3498db; white-space: pre-wrap;">{escape(message)}</div>
+    </div>
+    
+    <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;">
+    <p style="color: #7f8c8d; font-size: 0.9em;">
+      This message was sent from the ReformGym contact form.<br>
+      Reply directly to this email to respond to {escape(name)} ({escape(email)}).
+    </p>
+  </body>
+</html>"""
+        
+        # Attach both plain text and HTML versions
+        msg.attach(MIMEText(plain_body, 'plain'))
+        msg.attach(MIMEText(html_body, 'html'))
         
         # Send email
         with smtplib.SMTP(smtp_host, smtp_port) as server:
