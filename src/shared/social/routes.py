@@ -29,8 +29,16 @@ router = APIRouter(prefix="/api/social", tags=["social"])
 
 
 def get_user_by_username(db: Session, username: str) -> Optional[User]:
-    """Helper to get user by username."""
-    return db.query(User).filter(User.username == username).first()
+    """
+    Get user by username (case-insensitive lookup).
+    
+    Usernames are stored in lowercase in the database, so we normalize
+    the input to lowercase for consistent case-insensitive matching.
+    """
+    if not username:
+        return None
+    normalized_username = username.strip().lower()
+    return db.query(User).filter(User.username == normalized_username).first()
 
 
 def check_user_can_see_posts(viewer_id: str, post_owner: User, db: Session) -> bool:
@@ -683,10 +691,10 @@ async def get_user_profile(
     # Rule 1: NEVER include full_name or email
     response_data = {
         "username": target_user.username,
-        "is_pt": target_user.is_pt,  # Include PT verification status
-        "technical_level": target_user.technical_level,  # answer1
-        "favorite_exercise": target_user.favorite_exercise,  # answer2
-        "community_preference": target_user.community_preference,  # answer3
+        "is_pt": target_user.is_pt,
+        "technical_level": target_user.technical_level,
+        "favorite_exercise": target_user.favorite_exercise,
+        "community_preference": target_user.community_preference,
         "is_public": target_user.is_public,
         "can_see_posts": can_see_posts,
         "posts": None
@@ -728,8 +736,8 @@ async def get_user_profile(
                 PostResponse(
                     id=str(post.id),
                     user_id=post.user_id,
-                    username=target_user.username,  # Only username, no email
-                    is_pt=target_user.is_pt,  # Use database field for PT verification
+                    username=target_user.username,
+                    is_pt=target_user.is_pt,
                     post_type=post.post_type,
                     content=post.content,
                     analysis_id=post.analysis_id,
