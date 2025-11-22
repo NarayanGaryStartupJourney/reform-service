@@ -246,11 +246,21 @@ async def check_anonymous_limit(
 ):
     """Check if anonymous user has reached analysis limit. Returns limit status without requiring file upload."""
     # Check if user is authenticated
+    # Support both httpOnly cookies and Authorization header
     user = None
-    if credentials:
+    token = None
+    
+    # First, try to get token from httpOnly cookie (preferred method)
+    if "access_token" in request.cookies:
+        token = request.cookies.get("access_token")
+    # Fallback to Authorization header for backward compatibility
+    elif credentials is not None:
+        token = credentials.credentials
+    
+    if token:
         from src.shared.auth.auth import verify_token
         from src.shared.auth.database import User
-        payload = verify_token(credentials.credentials)
+        payload = verify_token(token, token_type="access")
         if payload:
             user_id = payload.get("sub")
             if user_id:
@@ -263,7 +273,7 @@ async def check_anonymous_limit(
                     db.close()
     
     # If authenticated, no limit applies (they use token system)
-    if credentials is not None and user is not None:
+    if user is not None:
         return {
             "has_limit": False,
             "is_authenticated": True,
@@ -975,14 +985,22 @@ async def upload_video(
     
     try:
         # Check if user is authenticated and apply token system
+        # Support both httpOnly cookies and Authorization header
         user_id = None
-        if credentials:
+        token = None
+        
+        # First, try to get token from httpOnly cookie (preferred method)
+        if "access_token" in request.cookies:
+            token = request.cookies.get("access_token")
+        # Fallback to Authorization header for backward compatibility
+        elif credentials is not None:
+            token = credentials.credentials
+        
+        if token:
             from src.shared.auth.auth import verify_token
-            payload = verify_token(credentials.credentials)
+            payload = verify_token(token, token_type="access")
             if payload:
                 user_id = payload.get("sub")
-        else:
-            pass  # Anonymous user
         
         client_ip = _get_client_ip(request)
         _check_rate_limit(client_ip)
@@ -993,7 +1011,7 @@ async def upload_video(
             notes = validate_notes(notes)
         
         # Check authentication status
-        is_authenticated = credentials is not None and user_id is not None
+        is_authenticated = user_id is not None
         
         # For logged-in users: check if they have at least 1 token BEFORE upload (base cost is always 1)
         if is_authenticated:
@@ -1256,7 +1274,7 @@ async def upload_video(
         
         # Only track anonymous analysis if user is truly not authenticated
         # Use user_id (set at the start) instead of user object which may not exist here
-        is_authenticated = credentials is not None and user_id is not None
+        is_authenticated = user_id is not None
         # Skip tracking anonymous analysis when running locally (not on Heroku)
         if not is_authenticated and os.environ.get("DYNO"):
             # Track anonymous analysis by IP (reset daily limit if new day before incrementing)
