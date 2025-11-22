@@ -26,7 +26,9 @@ from src.shared.social.routes import router as social_router
 from src.shared.payment.routes import router as payment_router
 from src.shared.contact.routes import router as contact_router
 from src.shared.admin.routes import router as admin_router
+from src.shared.analyses.routes import router as analyses_router
 from fastapi.security import HTTPAuthorizationCredentials
+from typing import Optional
 
 RATE_LIMIT_WINDOW_SECONDS = 60
 RATE_LIMIT_MAX_REQUESTS = 5
@@ -52,6 +54,9 @@ async def startup_event():
         # Initialize contact rate limiting tables
         from src.shared.contact.database import Base as ContactBase
         ContactBase.metadata.create_all(bind=engine, checkfirst=True)
+        # Initialize analysis history tables
+        from src.shared.analyses.database import Base as AnalysesBase
+        AnalysesBase.metadata.create_all(bind=engine, checkfirst=True)
         logging.info("Database initialization completed on startup")
     except Exception as e:
         # Log error but don't crash the app
@@ -67,6 +72,10 @@ app.include_router(auth_router)
 app.include_router(social_router)
 
 # Include payment/token routes
+app.include_router(payment_router)
+
+# Include analysis history routes
+app.include_router(analyses_router)
 app.include_router(payment_router)
 
 # Include contact routes
@@ -552,21 +561,30 @@ def _process_video_analysis(video: UploadFile, exercise: int, frames: list, fps:
 
 
 def build_analysis_response(exercise: int, frame_count: int, calculation_results: dict, camera_angle_info: dict,
-                            form_analysis: dict, phases: dict) -> dict:
+                            form_analysis: dict, phases: dict, fps: float = None) -> dict:
     """
     Builds general analysis response dictionary. Usable by both upload and livestream.
     Note: phases is stored as 'squat_phases' in response for backward compatibility.
+    
+    Ensures fps is included in calculation_results for consistent plot recreation.
     """
     from src.shared.exercises import get_exercise
     exercise_module = get_exercise(exercise)
     exercise_name = exercise_module.exercise_name if exercise_module else {1: "Squat", 2: "Bench", 3: "Deadlift"}.get(exercise, "Unknown")
+    
+    # Ensure fps is included in calculation_results for consistent plot recreation
+    # This matches how it's saved in the database
+    calc_results_with_fps = calculation_results.copy() if calculation_results else {}
+    if fps is not None and "fps" not in calc_results_with_fps:
+        calc_results_with_fps["fps"] = fps
     
     return {
         "status": "success",
         "exercise": exercise,
         "exercise_name": exercise_name,
         "frame_count": frame_count,
-        "calculation_results": calculation_results,
+        "fps": fps,  # Include fps as separate field for backward compatibility
+        "calculation_results": calc_results_with_fps,  # fps is also included here for consistency
         "camera_angle_info": camera_angle_info,
         "form_analysis": form_analysis,
         "squat_phases": phases,  # Keep 'squat_phases' key for backward compatibility
@@ -574,12 +592,109 @@ def build_analysis_response(exercise: int, frame_count: int, calculation_results
     }
 
 
+def _save_analysis_to_database(
+    user_id: str,
+    exercise: int,
+    exercise_name: str,
+    score: int,
+    frame_count: int,
+    fps: float,
+    calculation_results: dict,
+    form_analysis: dict,
+    camera_angle_info: dict,
+    phases: dict,
+    visualization_url: str,
+    output_filename: str,
+    filename: str,
+    file_size: int,
+    notes: Optional[str] = None
+) -> None:
+    """
+    Save analysis results to database for logged-in users.
+    
+    Saves all data needed to recreate scores and plots:
+    - calculation_results: angles_per_frame, asymmetry_per_frame, fps
+    - form_analysis: component scores, final_score breakdown
+    - phases: rep information for plot phase markers
+    
+    Errors are logged but do not fail the request.
+    """
+    try:
+        from src.shared.analyses.database import Analysis
+        
+        # Ensure fps is included in calculation_results, preserving original precision
+        calc_results_with_fps = calculation_results.copy() if calculation_results else {}
+        if "fps" in calc_results_with_fps:
+            fps_to_store = calc_results_with_fps["fps"]
+        else:
+            calc_results_with_fps["fps"] = fps
+            fps_to_store = fps
+        
+        # Create analysis record
+        analysis = Analysis(
+            user_id=user_id,
+            exercise=exercise,
+            exercise_name=exercise_name,
+            score=score,
+            frame_count=frame_count,
+            fps=fps_to_store,
+            calculation_results=calc_results_with_fps,
+            form_analysis=form_analysis,
+            camera_angle_info=camera_angle_info,
+            phases=phases,
+            visualization_url=visualization_url,
+            visualization_filename=output_filename,
+            filename=filename,
+            file_size=file_size,
+            notes=notes
+        )
+        
+        # Save to database (use new session to avoid conflicts)
+        db = next(get_db())
+        try:
+            db.add(analysis)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            import logging
+            logging.error(f"Failed to save analysis to database: {str(e)}")
+            # Don't fail the request - analysis was successful, just couldn't save history
+        finally:
+            db.close()
+    except Exception as e:
+        import logging
+        logging.error(f"Error saving analysis to database: {str(e)}")
+        # Don't fail the request - analysis was successful, just couldn't save history
+
+
+def _extract_score_from_form_analysis(form_analysis: dict) -> int:
+    """
+    Extract final score from form_analysis.
+    
+    Args:
+        form_analysis: Form analysis dictionary containing final_score
+    
+    Returns:
+        Final score (0-100), or 0 if not found
+    """
+    if not form_analysis or not form_analysis.get("final_score"):
+        return 0
+    
+    final_score_data = form_analysis.get("final_score", {})
+    if isinstance(final_score_data, dict):
+        return final_score_data.get("final_score", 0)
+    elif isinstance(final_score_data, (int, float)):
+        return int(final_score_data)
+    
+    return 0
+
+
 def _build_response(exercise: int, file_info: dict, file_size: int, frame_count: int, output_path: Path,
                    output_filename: str, calculation_results: dict, camera_angle_info: dict,
-                   form_analysis: dict, phases: dict, visualization_url: str = None) -> dict:
+                   form_analysis: dict, phases: dict, fps: float, visualization_url: str = None) -> dict:
     """Upload-specific response builder. Adds upload metadata to general analysis response."""
     analysis_response = build_analysis_response(
-        exercise, frame_count, calculation_results, camera_angle_info, form_analysis, phases
+        exercise, frame_count, calculation_results, camera_angle_info, form_analysis, phases, fps
     )
     if visualization_url is None:
         # visualization_url should always be provided by the caller
@@ -825,6 +940,7 @@ async def upload_video(
     request: Request,
     video: UploadFile = File(...),
     exercise: int = Form(...),
+    notes: Optional[str] = Form(None),
     # Optional: check for Authorization header to apply token limits for logged-in users
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
@@ -1079,6 +1195,8 @@ async def upload_video(
             video, exercise, None, fps, landmarks_list, validation_result
         )
         
+        # Create video for immediate viewing but don't save URL to database
+        # Videos are not needed for analysis history pages
         _cleanup_old_outputs(OUTPUTS_DIR)
         
         output_path, output_filename = create_visualization_streaming(
@@ -1100,6 +1218,9 @@ async def upload_video(
             else:  # Localhost
                 base_url = str(request.base_url).rstrip('/')
                 visualization_url = f"{base_url}/outputs/{output_filename}"
+        
+        # Note: visualization_url is included in response for immediate viewing
+        # but is NOT saved to database (set to None in _save_analysis_to_database)
         
         # Track anonymous analysis or deduct tokens for logged-in users after successful analysis
         # Only track/increment AFTER successful completion (we're past all error points here)
@@ -1192,13 +1313,36 @@ async def upload_video(
                 db.close()
         
         response = _build_response(exercise, file_info, file_size, frame_count, Path(output_path),
-                                  output_filename, calc_results, cam_info, form_analysis, phases, visualization_url)
+                                  output_filename, calc_results, cam_info, form_analysis, phases, fps, visualization_url)
         
         # Add token information to response if user is logged in
         if is_authenticated:
             if tokens_used is not None and tokens_remaining is not None:
                 response["tokens_used"] = tokens_used
                 response["tokens_remaining"] = tokens_remaining
+        
+        # Save analysis to database for logged-in users (after successful analysis)
+        if is_authenticated and user_id:
+            score = _extract_score_from_form_analysis(form_analysis)
+            exercise_name = response.get("exercise_name", "Unknown")
+            
+            _save_analysis_to_database(
+                user_id=user_id,
+                exercise=exercise,
+                exercise_name=exercise_name,
+                score=score,
+                frame_count=frame_count,
+                fps=fps,
+                calculation_results=calc_results,
+                form_analysis=form_analysis,
+                camera_angle_info=cam_info,
+                phases=phases,
+                visualization_url=None,  # Videos are not saved for analysis history
+                output_filename=None,  # No video file to reference
+                filename=None,  # Filename not needed for reconstruction
+                file_size=file_size,
+                notes=notes
+            )
         
         return response
     except Exception as e:
