@@ -302,9 +302,11 @@ async def login(
                 detail="Server configuration error. Please contact support."
             )
         
-        # Create response with user data (tokens sent via httpOnly cookies)
+        # Create response with user data
+        # Include access_token in body as fallback for browsers that block third-party cookies
+        # Cookies are still set for browsers that support them
         response = TokenResponse(
-            access_token=None,  # Not in body, sent via cookie
+            access_token=access_token,  # Include in body as fallback
             token_type="bearer",
             user_id=user.id,
             email=user.email,
