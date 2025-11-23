@@ -22,6 +22,7 @@ class PostCreate(BaseModel):
     score_data: Optional[Dict[str, Any]] = None  # Snapshot of score details
     plot_config: Optional[Dict[str, Any]] = None  # Config to recreate plots
     image_urls: Optional[List[str]] = None  # List of image URLs (for photo posts, future: analysis-to-photo conversion)
+    thumbnail_urls: Optional[List[str]] = None  # List of thumbnail URLs (for faster loading in feed)
     
     @field_validator('content')
     @classmethod
@@ -48,6 +49,7 @@ class PostResponse(BaseModel):
     score_data: Optional[Dict[str, Any]] = None
     plot_config: Optional[Dict[str, Any]] = None
     image_urls: Optional[List[str]] = None  # List of image URLs (for photo posts, future: analysis-to-photo conversion)
+    thumbnail_urls: Optional[List[str]] = None  # List of thumbnail URLs (for faster loading in feed)
     created_at: datetime
     updated_at: datetime
     like_count: int = 0

@@ -22,6 +22,7 @@ class Post(Base):
     score_data = Column(JSON, nullable=True)  # Snapshot of score details
     plot_config = Column(JSON, nullable=True)  # Config to recreate plots
     image_urls = Column(JSONB, nullable=True)  # List of image URLs (for photo posts, future: analysis-to-photo conversion)
+    thumbnail_urls = Column(JSONB, nullable=True)  # List of thumbnail URLs (for faster loading in feed)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

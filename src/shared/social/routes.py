@@ -174,6 +174,7 @@ async def get_feed(
             score_data=post.score_data,
             plot_config=post.plot_config,
             image_urls=post.image_urls,  # Include image URLs
+            thumbnail_urls=post.thumbnail_urls,  # Include thumbnail URLs
             created_at=post.created_at,
             updated_at=post.updated_at,
             like_count=like_count_map.get(str(post.id), 0),
@@ -247,6 +248,7 @@ async def create_post(
         score_data=post_data.score_data,
         plot_config=post_data.plot_config,
         image_urls=post_data.image_urls,  # Store image URLs
+        thumbnail_urls=post_data.thumbnail_urls,  # Store thumbnail URLs
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow()
     )
@@ -266,6 +268,7 @@ async def create_post(
         score_data=post.score_data,
         plot_config=post.plot_config,
         image_urls=post.image_urls,  # Include image URLs in response
+        thumbnail_urls=post.thumbnail_urls,  # Include thumbnail URLs in response
         created_at=post.created_at,
         updated_at=post.updated_at,
         like_count=0,

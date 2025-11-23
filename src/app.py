@@ -666,6 +666,7 @@ def build_analysis_response(exercise: int, frame_count: int, calculation_results
 
 
 def _save_analysis_to_database(
+    db,
     user_id: str,
     exercise: int,
     exercise_name: str,
@@ -690,54 +691,81 @@ def _save_analysis_to_database(
     - form_analysis: component scores, final_score breakdown
     - phases: rep information for plot phase markers
     
-    Errors are logged but do not fail the request.
+    Args:
+        db: Database session (must be provided, not created internally)
+        ... (other parameters remain the same)
+    
+    Note: This function does NOT commit - caller must commit the transaction.
+    Raises exceptions on error - caller must handle rollback.
     """
+    from src.shared.analyses.database import Analysis
+    from src.shared.auth.database import Base, engine
+    import logging
+    
+    # Ensure analyses table exists (fallback if startup init failed)
     try:
-        from src.shared.analyses.database import Analysis
-        
-        # Ensure fps is included in calculation_results, preserving original precision
-        calc_results_with_fps = calculation_results.copy() if calculation_results else {}
-        if "fps" in calc_results_with_fps:
-            fps_to_store = calc_results_with_fps["fps"]
-        else:
-            calc_results_with_fps["fps"] = fps
-            fps_to_store = fps
-        
+        Base.metadata.create_all(bind=engine, checkfirst=True)
+    except Exception as table_error:
+        logging.warning(f"Failed to ensure analyses table exists: {str(table_error)}")
+        # Continue anyway - table might already exist
+    
+    # Validate required parameters
+    if not user_id:
+        raise ValueError("user_id is required")
+    if exercise is None:
+        raise ValueError("exercise is required")
+    if not exercise_name:
+        raise ValueError("exercise_name is required")
+    if score is None:
+        raise ValueError("score is required")
+    if frame_count is None:
+        raise ValueError("frame_count is required")
+    if fps is None:
+        raise ValueError("fps is required")
+    if not calculation_results:
+        raise ValueError("calculation_results is required")
+    if not form_analysis:
+        raise ValueError("form_analysis is required")
+    if file_size is None:
+        raise ValueError("file_size is required")
+    
+    # Ensure fps is included in calculation_results, preserving original precision
+    calc_results_with_fps = calculation_results.copy() if calculation_results else {}
+    if "fps" in calc_results_with_fps:
+        fps_to_store = calc_results_with_fps["fps"]
+    else:
+        calc_results_with_fps["fps"] = fps
+        fps_to_store = fps
+    
+    # Validate data types and values
+    try:
         # Create analysis record
         analysis = Analysis(
-            user_id=user_id,
-            exercise=exercise,
-            exercise_name=exercise_name,
-            score=score,
-            frame_count=frame_count,
-            fps=fps_to_store,
-            calculation_results=calc_results_with_fps,
-            form_analysis=form_analysis,
-            camera_angle_info=camera_angle_info,
-            phases=phases,
-            visualization_url=visualization_url,
-            visualization_filename=output_filename,
-            filename=filename,
-            file_size=file_size,
-            notes=notes
+            user_id=str(user_id),  # Ensure it's a string
+            exercise=int(exercise),  # Ensure it's an integer
+            exercise_name=str(exercise_name),  # Ensure it's a string
+            score=int(score),  # Ensure it's an integer
+            frame_count=int(frame_count),  # Ensure it's an integer
+            fps=float(fps_to_store),  # Ensure it's a float
+            calculation_results=calc_results_with_fps,  # JSONB - should be dict
+            form_analysis=form_analysis,  # JSONB - should be dict
+            camera_angle_info=camera_angle_info if camera_angle_info else None,  # JSONB - can be None
+            phases=phases if phases else None,  # JSONB - can be None
+            visualization_url=visualization_url if visualization_url else None,
+            visualization_filename=output_filename if output_filename else None,
+            filename=filename if filename else None,
+            file_size=int(file_size),  # Ensure it's an integer
+            notes=notes if notes else None
         )
         
-        # Save to database (use new session to avoid conflicts)
-        db = next(get_db())
-        try:
-            db.add(analysis)
-            db.commit()
-        except Exception as e:
-            db.rollback()
-            import logging
-            logging.error(f"Failed to save analysis to database: {str(e)}")
-            # Don't fail the request - analysis was successful, just couldn't save history
-        finally:
-            db.close()
+        # Add to session (caller will commit)
+        db.add(analysis)
+        # Flush to validate before commit (this will catch constraint violations early)
+        db.flush()
+        
     except Exception as e:
-        import logging
-        logging.error(f"Error saving analysis to database: {str(e)}")
-        # Don't fail the request - analysis was successful, just couldn't save history
+        logging.error(f"Error creating analysis record: {str(e)}", exc_info=True)
+        raise
 
 
 def _extract_score_from_form_analysis(form_analysis: dict) -> int:
@@ -1347,7 +1375,7 @@ async def upload_video(
             finally:
                 db.close()
         else:
-            # Deduct tokens for logged-in users
+            # Deduct tokens AND save analysis in the same transaction for logged-in users
             token_cost = calculate_token_cost(file_size)
             db = next(get_db())
             try:
@@ -1380,22 +1408,120 @@ async def upload_video(
                         tokens_used = None
                         tokens_remaining = None
                     else:
-                        # Commit the token deduction
-                        db.commit()
+                        # Save analysis in the same transaction BEFORE committing
+                        # This ensures both operations succeed or both fail together
+                        score = _extract_score_from_form_analysis(form_analysis)
+                        exercise_name_map = {1: "Squat", 2: "Bench", 3: "Deadlift"}
+                        exercise_name = exercise_name_map.get(exercise, "Unknown")
                         
-                        # Get updated balance
-                        balance = calculate_token_balance(db, user_id)
-                        tokens_used = round(token_cost, 1)
-                        tokens_remaining = balance.total
+                        try:
+                            _save_analysis_to_database(
+                                db=db,
+                                user_id=user_id,
+                                exercise=exercise,
+                                exercise_name=exercise_name,
+                                score=score,
+                                frame_count=frame_count,
+                                fps=fps,
+                                calculation_results=calc_results,
+                                form_analysis=form_analysis,
+                                camera_angle_info=cam_info,
+                                phases=phases,
+                                visualization_url=None,  # Videos are not saved for analysis history
+                                output_filename=None,  # No video file to reference
+                                filename=file_info["filename"],  # Use actual filename from uploaded file
+                                file_size=file_size,
+                                notes=notes
+                            )
+                            
+                            # Commit both token deduction and analysis saving together
+                            try:
+                                db.commit()
+                            except Exception as commit_error:
+                                # If commit fails, rollback everything
+                                db.rollback()
+                                import logging
+                                error_type = type(commit_error).__name__
+                                error_message = str(commit_error)
+                                logging.error(f"Failed to commit transaction for user {user_id}: {error_type}: {error_message}", exc_info=True)
+                                
+                                # Check for specific error types for better logging
+                                if "foreign key" in error_message.lower() or "violates foreign key" in error_message.lower():
+                                    logging.error(f"Foreign key constraint violation - user_id {user_id} may not exist in users table")
+                                elif "not null" in error_message.lower() or "null value" in error_message.lower():
+                                    logging.error(f"NOT NULL constraint violation - required field is missing")
+                                elif "invalid input" in error_message.lower() or "invalid" in error_message.lower():
+                                    logging.error(f"Invalid data format - check JSONB fields or data types")
+                                
+                                raise HTTPException(
+                                    status_code=500,
+                                    detail={
+                                        "error": "database_commit_failed",
+                                        "message": "Analysis completed but failed to save to database. Please try again.",
+                                        "internal_error": f"{error_type}: {error_message}"
+                                    }
+                                )
+                            
+                            # Get updated balance after successful commit
+                            balance = calculate_token_balance(db, user_id)
+                            tokens_used = round(token_cost, 1)
+                            tokens_remaining = balance.total
+                        except HTTPException:
+                            # Re-raise HTTP exceptions (they're already properly formatted)
+                            raise
+                        except Exception as analysis_error:
+                            # If analysis saving fails, rollback the entire transaction (including token deduction)
+                            db.rollback()
+                            import logging
+                            error_type = type(analysis_error).__name__
+                            error_message = str(analysis_error)
+                            logging.error(f"Failed to save analysis to database: {error_type}: {error_message}", exc_info=True)
+                            logging.error(f"Rolled back token deduction for user {user_id} due to analysis save failure")
+                            tokens_used = None
+                            tokens_remaining = None
+                            raise HTTPException(
+                                status_code=500,
+                                detail={
+                                    "error": "database_save_failed",
+                                    "message": "Analysis completed but failed to save to database. Please try again.",
+                                    "internal_error": f"{error_type}: {error_message}"
+                                }
+                            )
+            except HTTPException:
+                # Re-raise HTTP exceptions (they're intentional error responses)
+                raise
             except Exception as e:
                 db.rollback()
                 import logging
-                logging.error(f"Failed to deduct tokens: {str(e)}")
+                logging.error(f"Failed to deduct tokens or save analysis: {str(e)}", exc_info=True)
                 # Set tokens to None on error so response doesn't include invalid data
                 tokens_used = None
                 tokens_remaining = None
+                # Raise HTTPException to ensure the error is properly returned to the client
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error": "database_transaction_failed",
+                        "message": "Analysis completed but failed to save to database. Please try again.",
+                        "internal_error": str(e)
+                    }
+                )
             finally:
                 db.close()
+        
+        # CRITICAL: If user is authenticated but tokens_used is None, the transaction failed
+        # We should NOT return a successful response - raise an error instead
+        if is_authenticated and tokens_used is None:
+            import logging
+            logging.error(f"CRITICAL: Analysis completed for user {user_id} but database transaction failed. Tokens not deducted and analysis not saved.")
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "database_transaction_failed",
+                    "message": "Analysis completed but failed to save to database. Please try again.",
+                    "note": "Your tokens were not deducted. Please retry the analysis."
+                }
+            )
         
         response = _build_response(exercise, file_info, file_size, frame_count, Path(output_path),
                                   output_filename, calc_results, cam_info, form_analysis, phases, fps, visualization_url)
@@ -1405,29 +1531,17 @@ async def upload_video(
             if tokens_used is not None and tokens_remaining is not None:
                 response["tokens_used"] = tokens_used
                 response["tokens_remaining"] = tokens_remaining
-        
-        # Save analysis to database for logged-in users (after successful analysis)
-        if is_authenticated and user_id:
-            score = _extract_score_from_form_analysis(form_analysis)
-            exercise_name = response.get("exercise_name", "Unknown")
-            
-            _save_analysis_to_database(
-                user_id=user_id,
-                exercise=exercise,
-                exercise_name=exercise_name,
-                score=score,
-                frame_count=frame_count,
-                fps=fps,
-                calculation_results=calc_results,
-                form_analysis=form_analysis,
-                camera_angle_info=cam_info,
-                phases=phases,
-                visualization_url=None,  # Videos are not saved for analysis history
-                output_filename=None,  # No video file to reference
-                filename=None,  # Filename not needed for reconstruction
-                file_size=file_size,
-                notes=notes
-            )
+            else:
+                # This should never happen due to the check above, but log it as a critical error
+                import logging
+                logging.critical(f"CRITICAL: Analysis completed for user {user_id} but token information is missing. This indicates a serious bug.")
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error": "database_transaction_failed",
+                        "message": "Analysis completed but failed to save to database. Please try again."
+                    }
+                )
         
         return response
     except Exception as e:

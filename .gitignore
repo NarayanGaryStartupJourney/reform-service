@@ -33,6 +33,8 @@ htmlcov/
 test_*.py
 verify_*.py
 check_*.py
+TEST_IMAGE_UPLOAD.md
+TESTING_LOCALLY.md
 
 # Utility/Admin Scripts (local-only, not for deployment)
 add_promotional_tokens.py
@@ -46,6 +48,8 @@ test_monthly_token_reset.py
 *.log
 WORK_LOG.md
 LIVESTREAM_ANALYSIS.md
+TEST_IMAGE_UPLOAD.md
+TESTING_LOCALLY.md
 
 # Outputs
 outputs/

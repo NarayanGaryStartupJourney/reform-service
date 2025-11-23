@@ -47,7 +47,7 @@ class Analysis(Base):
     # Video information
     visualization_url = Column(String, nullable=True)  # URL to visualization video
     visualization_filename = Column(String, nullable=True)  # Filename for cleanup
-    filename = Column(String, nullable=True)  # Original uploaded filename (not needed for reconstruction)
+    filename = Column(String, nullable=False)  # Original uploaded filename (required by database constraint)
     file_size = Column(Integer, nullable=False)  # File size in bytes
     
     # Optional user notes
